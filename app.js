@@ -11,6 +11,11 @@ const S = {
   nextId: 1,
   drag: null,
   pan: null,
+  history: [],
+  historyIdx: -1,
+  _histTimer: null,
+  fileHandle: null,
+  autoSaveInterval: null,
 };
 function gid(){ return 'n'+(S.nextId++) }
 
@@ -68,6 +73,113 @@ function fmt(v){
 function fmtPct(v){
   if(v===null||v===undefined||isNaN(v)) return '—';
   return parseFloat((v*100).toFixed(3)).toString()+'%';
+}
+
+// ── HISTORY (UNDO/REDO) ───────────────────────────────────────────────
+function snapshotState(){
+  return JSON.stringify({nodes:S.nodes,edges:S.edges,formulas:S.formulas,nextId:S.nextId});
+}
+
+function pushHistory(){
+  clearTimeout(S._histTimer); S._histTimer=null;
+  S.history.splice(S.historyIdx+1);
+  S.history.push(snapshotState());
+  while(S.history.length>40) S.history.shift();
+  S.historyIdx=S.history.length-1;
+  updateUndoRedo();
+}
+
+function scheduleHistory(){
+  clearTimeout(S._histTimer);
+  S._histTimer=setTimeout(()=>{ S._histTimer=null; pushHistory(); },800);
+}
+
+function restoreState(snap){
+  const d=JSON.parse(snap);
+  S.nodes=d.nodes; S.edges=d.edges; S.formulas=d.formulas; S.nextId=d.nextId;
+  S.sel=null; S.connSrc=null;
+  render();
+}
+
+function undo(){
+  if(S.historyIdx<=0) return;
+  S.historyIdx--;
+  restoreState(S.history[S.historyIdx]);
+  updateUndoRedo();
+}
+
+function redo(){
+  if(S.historyIdx>=S.history.length-1) return;
+  S.historyIdx++;
+  restoreState(S.history[S.historyIdx]);
+  updateUndoRedo();
+}
+
+function updateUndoRedo(){
+  document.getElementById('bUndo').disabled=S.historyIdx<=0;
+  document.getElementById('bRedo').disabled=S.historyIdx>=S.history.length-1;
+}
+
+function initHistory(){
+  clearTimeout(S._histTimer); S._histTimer=null;
+  S.history=[snapshotState()]; S.historyIdx=0;
+  updateUndoRedo();
+}
+
+// ── AUTO-SAVE ─────────────────────────────────────────────────────────
+function buildSaveData(){
+  return {
+    nodes:Object.values(S.nodes).map(n=>({id:n.id,name:n.name,x:n.x,y:n.y,baseValue:n.baseValue,modifier:n.modifier||0,baseValueIsPercent:n.baseValueIsPercent||false})),
+    edges:Object.values(S.edges).map(e=>({id:e.id,childId:e.childId,parentId:e.parentId,variable:e.variable})),
+    formulas:Object.entries(S.formulas).map(([nodeId,expression])=>({nodeId,expression})),
+    _meta:{nextId:S.nextId},
+  };
+}
+
+function setSaveStatus(text,cls){
+  const el=document.getElementById('saveStatus');
+  if(!el) return;
+  el.textContent=text; el.className='save-status'+(cls?' '+cls:'');
+}
+
+async function writeToHandle(){
+  const json=JSON.stringify(buildSaveData(),null,2);
+  const w=await S.fileHandle.createWritable();
+  await w.write(json); await w.close();
+}
+
+function startAutoSave(){
+  if(S.autoSaveInterval) return;
+  S.autoSaveInterval=setInterval(async()=>{
+    if(!S.fileHandle) return;
+    try{ await writeToHandle(); setSaveStatus('Auto-saved '+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}),'ok'); }
+    catch(e){ setSaveStatus('Auto-save failed','err'); }
+  },5000);
+}
+
+async function doSave(){
+  try{
+    if(!S.fileHandle){
+      if(!window.showSaveFilePicker){ downloadFallback(); return; }
+      S.fileHandle=await window.showSaveFilePicker({
+        suggestedName:'metric-tree.json',
+        types:[{description:'JSON',accept:{'application/json':['.json']}}],
+      });
+    }
+    await writeToHandle();
+    setSaveStatus('Saved','ok');
+    startAutoSave();
+  } catch(e){
+    if(e.name==='AbortError') return;
+    S.fileHandle=null; downloadFallback();
+  }
+}
+
+function downloadFallback(){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(buildSaveData(),null,2)],{type:'application/json'}));
+  a.download='metric-tree.json'; a.click();
+  setSaveStatus('Downloaded','ok');
 }
 
 // ── COMPUTE ───────────────────────────────────────────────────────────
@@ -230,7 +342,7 @@ function inspNode(id){
   h+=`<hr class="divider"><button class="btn danger" id="iDel" style="width:100%">Delete Node</button>`;
   cont.innerHTML=h;
 
-  document.getElementById('iName').addEventListener('input',e=>{ n.name=e.target.value; renderNodes(); renderEdges(); });
+  document.getElementById('iName').addEventListener('input',e=>{ n.name=e.target.value; renderNodes(); renderEdges(); scheduleHistory(); });
   if(leaf){
     const refreshLeaf=()=>{
       computeAll(); renderNodes(); renderEdges();
@@ -240,16 +352,16 @@ function inspNode(id){
     document.getElementById('iBase').addEventListener('input',e=>{
       const val=parseFloat(e.target.value)||0;
       n.baseValue=n.baseValueIsPercent?val/100:val;
-      refreshLeaf();
+      refreshLeaf(); scheduleHistory();
     });
     document.getElementById('iPctToggle').addEventListener('click',()=>{
       n.baseValueIsPercent=!n.baseValueIsPercent;
       const inp=document.getElementById('iBase');
       inp.value=n.baseValueIsPercent?parseFloat((n.baseValue*100).toFixed(8)):n.baseValue;
       document.getElementById('iPctToggle').classList.toggle('active',n.baseValueIsPercent);
-      refreshLeaf();
+      refreshLeaf(); pushHistory();
     });
-    document.getElementById('iMod').addEventListener('input',e=>{ n.modifier=parseFloat(e.target.value)||0; refreshLeaf(); });
+    document.getElementById('iMod').addEventListener('input',e=>{ n.modifier=parseFloat(e.target.value)||0; refreshLeaf(); scheduleHistory(); });
   } else {
     const refreshParent=()=>{
       computeAll(); renderNodes(); renderEdges();
@@ -260,8 +372,8 @@ function inspNode(id){
       if(mvEl) mvEl.value=fvp(c2.modifiedValue);
       updatePrev(id);
     };
-    document.getElementById('iFormula').addEventListener('input',e=>{ S.formulas[id]=e.target.value; refreshParent(); });
-    document.getElementById('iMod').addEventListener('input',e=>{ n.modifier=parseFloat(e.target.value)||0; refreshParent(); });
+    document.getElementById('iFormula').addEventListener('input',e=>{ S.formulas[id]=e.target.value; refreshParent(); scheduleHistory(); });
+    document.getElementById('iMod').addEventListener('input',e=>{ n.modifier=parseFloat(e.target.value)||0; refreshParent(); scheduleHistory(); });
     document.getElementById('iPctToggle').addEventListener('click',()=>{
       n.baseValueIsPercent=!n.baseValueIsPercent;
       document.getElementById('iPctToggle').classList.toggle('active',n.baseValueIsPercent);
@@ -270,7 +382,7 @@ function inspNode(id){
       const bvEl=document.getElementById('iBaseVal'), mvEl=document.getElementById('iModifiedVal');
       if(bvEl) bvEl.value=fvp(c2.baseValue);
       if(mvEl) mvEl.value=fvp(c2.modifiedValue);
-      renderNodes();
+      renderNodes(); pushHistory();
     });
     updatePrev(id);
   }
@@ -347,7 +459,7 @@ function addNode(){
   const id=gid(), cc=document.getElementById('cc');
   const cx=(cc.clientWidth/2-S.T.x)/S.T.s, cy=(cc.clientHeight/2-S.T.y)/S.T.s;
   S.nodes[id]={id,name:'New Metric',x:cx-84,y:cy-44,baseValue:0,modifier:0,baseValueIsPercent:false};
-  selNode(id); render();
+  selNode(id); render(); pushHistory();
 }
 
 function delNode(id){
@@ -355,7 +467,7 @@ function delNode(id){
   delete S.nodes[id]; delete S.formulas[id];
   if(S.sel?.id===id) S.sel=null;
   if(S.connSrc===id) S.connSrc=null;
-  render();
+  render(); pushHistory();
 }
 
 function connect(childId, parentId){
@@ -367,7 +479,7 @@ function connect(childId, parentId){
   const eid=gid();
   S.edges[eid]={id:eid,childId,parentId,variable:v};
   if(S.connMode) S.connSrc=null;
-  selNode(parentId); render();
+  selNode(parentId); render(); pushHistory();
 }
 
 function removeEdge(eid){
@@ -376,7 +488,7 @@ function removeEdge(eid){
   const rem=Object.values(S.edges).filter(e=>e.parentId===pid).sort((a,b)=>a.variable<b.variable?-1:1);
   rem.forEach((e,i)=>e.variable=String.fromCharCode(65+i));
   if(S.sel?.id===eid) S.sel=null;
-  render();
+  render(); pushHistory();
 }
 
 // ── ZOOM / PAN ────────────────────────────────────────────────────────
@@ -426,11 +538,15 @@ document.addEventListener('mousemove',ev=>{
 });
 
 document.addEventListener('mouseup',()=>{
+  if(S.drag) pushHistory();
   S.drag=null; S.pan=null; cc.classList.remove('panning');
 });
 
 document.addEventListener('keydown',ev=>{
-  if(ev.target.tagName==='INPUT'||ev.target.contentEditable==='true') return;
+  const inInput=ev.target.tagName==='INPUT'||ev.target.contentEditable==='true';
+  if((ev.ctrlKey||ev.metaKey)&&ev.key==='z'&&!ev.shiftKey){ ev.preventDefault(); undo(); return; }
+  if((ev.ctrlKey||ev.metaKey)&&(ev.key==='y'||(ev.key==='z'&&ev.shiftKey))){ ev.preventDefault(); redo(); return; }
+  if(inInput) return;
   if((ev.key==='Delete'||ev.key==='Backspace')&&S.sel){
     if(S.sel.type==='node') delNode(S.sel.id);
     else removeEdge(S.sel.id);
@@ -443,6 +559,8 @@ document.addEventListener('keydown',ev=>{
 
 // ── TOOLBAR ───────────────────────────────────────────────────────────
 document.getElementById('bAdd').addEventListener('click',addNode);
+document.getElementById('bUndo').addEventListener('click',undo);
+document.getElementById('bRedo').addEventListener('click',redo);
 
 document.getElementById('bConn').addEventListener('click',()=>{
   S.connMode=!S.connMode; S.connSrc=null;
@@ -452,17 +570,7 @@ document.getElementById('bConn').addEventListener('click',()=>{
   render();
 });
 
-document.getElementById('bSave').addEventListener('click',()=>{
-  const data={
-    nodes:Object.values(S.nodes).map(n=>({id:n.id,name:n.name,x:n.x,y:n.y,baseValue:n.baseValue,modifier:n.modifier||0})),
-    edges:Object.values(S.edges).map(e=>({id:e.id,childId:e.childId,parentId:e.parentId,variable:e.variable})),
-    formulas:Object.entries(S.formulas).map(([nodeId,expression])=>({nodeId,expression})),
-    _meta:{nextId:S.nextId},
-  };
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
-  a.download='metric-tree.json'; a.click();
-});
+document.getElementById('bSave').addEventListener('click',doSave);
 
 document.getElementById('bLoad').addEventListener('click',()=>document.getElementById('fileIn').click());
 document.getElementById('fileIn').addEventListener('change',ev=>{
@@ -476,14 +584,17 @@ document.getElementById('fileIn').addEventListener('change',ev=>{
       for(const e of d.edges||[]) S.edges[e.id]=e;
       for(const f of d.formulas||[]) S.formulas[f.nodeId]=f.expression;
       if(d._meta?.nextId) S.nextId=d._meta.nextId;
-      render();
+      render(); initHistory();
     } catch(err){ alert('Failed to load: '+err.message); }
   };
   r.readAsText(f); ev.target.value='';
 });
 
 document.getElementById('bReset').addEventListener('click',()=>{
-  if(confirm('Reset? All nodes and edges will be cleared.')){ S.nodes={}; S.edges={}; S.formulas={}; S.computed={}; S.sel=null; S.nextId=1; render(); }
+  if(confirm('Reset? All nodes and edges will be cleared.')){
+    S.nodes={}; S.edges={}; S.formulas={}; S.computed={}; S.sel=null; S.nextId=1;
+    render(); initHistory();
+  }
 });
 
 // ── UTILS ─────────────────────────────────────────────────────────────
@@ -492,4 +603,4 @@ function ea(s){ return String(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;') }
 function setHint(t){ document.getElementById('hint').textContent=t }
 
 // ── INIT ──────────────────────────────────────────────────────────────
-applyT(); render();
+applyT(); render(); initHistory();
