@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Metric Tree Builder</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="toolbar">
+  <h1>Metric Tree</h1>
+  <button class="btn primary" id="bAdd">+ Add Node</button>
+  <button class="btn" id="bConn">Connect</button>
+  <div class="sep"></div>
+  <button class="btn" id="bSave">Save</button>
+  <button class="btn" id="bLoad">Load</button>
+  <div class="sep"></div>
+  <button class="btn danger" id="bReset">Reset</button>
+  <span id="hint"></span>
+  <input type="file" id="fileIn" accept=".json" style="display:none">
+</div>
+<div id="main">
+  <div id="cc">
+    <div id="canvas">
+      <svg id="svg-layer" width="1" height="1">
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0,8 3,0 6" fill="#888"/>
+          </marker>
+          <marker id="arr-sel" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0,8 3,0 6" fill="#3b82f6"/>
+          </marker>
+        </defs>
+        <g id="edges-g"></g>
+      </svg>
+      <div id="nodes-layer"></div>
+    </div>
+  </div>
+  <div id="inspector">
+    <div id="iEmpty" class="empty">Select a node or edge.<br><br><b>Shift+click</b> a parent node while a child node is selected to connect them.</div>
+    <div id="iContent" style="display:none"></div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
