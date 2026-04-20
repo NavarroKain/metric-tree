@@ -65,6 +65,11 @@ function fmt(v){
   return parseFloat(v.toFixed(3)).toString();
 }
 
+function fmtPct(v){
+  if(v===null||v===undefined||isNaN(v)) return '—';
+  return parseFloat((v*100).toFixed(3)).toString()+'%';
+}
+
 // ── COMPUTE ───────────────────────────────────────────────────────────
 function computeAll(){
   S.computed={};
@@ -83,7 +88,10 @@ function computeAll(){
           if(!c||c.error!==null) throw new Error('Child error');
           bv[e.variable]=c.baseValue; mv[e.variable]=c.modifiedValue;
         }
-        S.computed[id]={baseValue:evalFormula(expr,bv), modifiedValue:evalFormula(expr,mv), error:null};
+        const base=evalFormula(expr,bv);
+        const ownMod=parseFloat(n.modifier)||0;
+        const modified=evalFormula(expr,mv)*(1+ownMod/100);
+        S.computed[id]={baseValue:base, modifiedValue:modified, error:null};
       } catch(err){ S.computed[id]={baseValue:null,modifiedValue:null,error:err.message}; }
     }
   }
@@ -106,12 +114,17 @@ function renderNodes(){
     const isSel=S.sel?.type==='node'&&S.sel.id===id;
     const isSrc=S.connSrc===id;
     card.className='nc'+(isSel?' sel':'')+(isSrc?' csrc':'')+(c.error?' err':'');
-    const mod=leaf?(parseFloat(n.modifier)||0):0;
+    const mod=parseFloat(n.modifier)||0;
     const hasM=mod!==0;
+    const isPct=!!n.baseValueIsPercent;
+    const delta=(c.baseValue!=null&&c.modifiedValue!=null&&!c.error)?(c.modifiedValue-c.baseValue):null;
+    const hasDelta=delta!==null&&Math.abs(delta)>1e-9;
+    const fv=(v)=>isPct?fmtPct(v):fmt(v);
     let h=`<div class="nh">${esc(n.name)}</div><div class="nb">`;
-    h+=`<div class="nr"><span class="nl">Base</span><span class="nv">${fmt(c.baseValue)}</span></div>`;
-    h+=`<div class="nr"><span class="nl">Modified</span><span class="nv ${hasM?'amber':''}">${fmt(c.modifiedValue)}</span></div>`;
-    if(leaf&&hasM) h+=`<div class="nr"><span class="nl">Modifier</span><span class="nm nz">${mod>0?'+':''}${mod}%</span></div>`;
+    h+=`<div class="nr"><span class="nl">Base</span><span class="nv">${fv(c.baseValue)}</span></div>`;
+    h+=`<div class="nr"><span class="nl">Modified</span><span class="nv ${hasDelta?'amber':''}">${fv(c.modifiedValue)}</span></div>`;
+    h+=`<div class="nr"><span class="nl">Modifier</span><span class="nm ${hasM?'nz':''}">${mod>0?'+':''}${fmt(mod)}%</span></div>`;
+    if(hasDelta){ const sign=delta>0?'+':''; h+=`<div class="nr"><span class="nl">Δ</span><span class="nv ${delta>0?'pos':'neg'}">${sign}${fv(delta)}</span></div>`; }
     h+=`</div>`;
     if(c.error) h+=`<div class="nerr">${esc(c.error)}</div>`;
     card.innerHTML=h;
@@ -121,9 +134,10 @@ function renderNodes(){
 function nodeH(id){
   const c=S.computed[id]||{}, n=S.nodes[id];
   if(!n) return 88;
-  const leaf=isLeaf(id), mod=leaf?(parseFloat(n.modifier)||0):0;
-  let h=36+6+18+18;
-  if(leaf&&mod!==0) h+=18;
+  const delta=(c.baseValue!=null&&c.modifiedValue!=null&&!c.error)?(c.modifiedValue-c.baseValue):null;
+  const hasDelta=delta!==null&&Math.abs(delta)>1e-9;
+  let h=36+6+18+18+18; // header+padding+base+modified+modifier
+  if(hasDelta) h+=18;
   if(c.error) h+=24;
   return h+14;
 }
@@ -191,9 +205,11 @@ function inspNode(id){
   let h=`<div class="ititle">${leaf?'Leaf Node':'Parent Node'}</div>`;
   h+=fg('Name',`<input class="fi" id="iName" type="text" value="${ea(n.name)}">`);
   if(leaf){
-    h+=fg('Base Value',`<input class="fi" id="iBase" type="number" value="${n.baseValue}">`);
-    h+=fg('Modifier',`<div class="fi-row"><input class="fi" id="iMod" type="number" value="${mod}" step="0.1"><span class="fsufx">%</span></div>`);
-    h+=fg('Modified Value (computed)',`<input class="fi" type="text" value="${fmt(c.modifiedValue)}" readonly>`);
+    const baseDisp=n.baseValueIsPercent?parseFloat((n.baseValue*100).toFixed(8)):n.baseValue;
+    h+=fg('Base Value',`<div class="fi-row"><input class="fi" id="iBase" type="number" step="any" value="${baseDisp}"><button class="pct-toggle${n.baseValueIsPercent?' active':''}" id="iPctToggle">%</button></div>`);
+    h+=fg('Modifier',`<div class="fi-row"><input class="fi" id="iMod" type="number" value="${mod}" step="any"><span class="fsufx">%</span></div>`);
+    const modVal=n.baseValueIsPercent?fmtPct(c.modifiedValue):fmt(c.modifiedValue);
+    h+=fg('Modified Value (computed)',`<input class="fi" id="iModVal" type="text" value="${modVal}" readonly>`);
   } else {
     const expr=S.formulas[id]||'';
     h+=fg('Formula',`<input class="fi" id="iFormula" type="text" value="${ea(expr)}" placeholder="e.g. A * B">`);
@@ -206,18 +222,56 @@ function inspNode(id){
     }
     h+=`</div></div>`;
     h+=fg('Formula Preview',`<div class="fprev" id="iPrev">—</div>`);
-    h+=fg('Base (computed)',`<input class="fi" type="text" value="${fmt(c.baseValue)}" readonly>`);
-    h+=fg('Modified (computed)',`<input class="fi" type="text" value="${fmt(c.modifiedValue)}" readonly>`);
+    h+=fg('Modifier',`<div class="fi-row"><input class="fi" id="iMod" type="number" value="${mod}" step="any"><span class="fsufx">%</span></div>`);
+    const fv2=(v)=>n.baseValueIsPercent?fmtPct(v):fmt(v);
+    h+=fg('Base (computed)',`<div class="fi-row"><input class="fi" id="iBaseVal" type="text" value="${fv2(c.baseValue)}" readonly><button class="pct-toggle${n.baseValueIsPercent?' active':''}" id="iPctToggle">%</button></div>`);
+    h+=fg('Modified (computed)',`<input class="fi" id="iModifiedVal" type="text" value="${fv2(c.modifiedValue)}" readonly>`);
   }
   h+=`<hr class="divider"><button class="btn danger" id="iDel" style="width:100%">Delete Node</button>`;
   cont.innerHTML=h;
 
   document.getElementById('iName').addEventListener('input',e=>{ n.name=e.target.value; renderNodes(); renderEdges(); });
   if(leaf){
-    document.getElementById('iBase').addEventListener('input',e=>{ n.baseValue=parseFloat(e.target.value)||0; render(); });
-    document.getElementById('iMod').addEventListener('input',e=>{ n.modifier=parseFloat(e.target.value)||0; render(); });
+    const refreshLeaf=()=>{
+      computeAll(); renderNodes(); renderEdges();
+      const mv=document.getElementById('iModVal');
+      if(mv){ const c2=S.computed[id]||{}; mv.value=n.baseValueIsPercent?fmtPct(c2.modifiedValue):fmt(c2.modifiedValue); }
+    };
+    document.getElementById('iBase').addEventListener('input',e=>{
+      const val=parseFloat(e.target.value)||0;
+      n.baseValue=n.baseValueIsPercent?val/100:val;
+      refreshLeaf();
+    });
+    document.getElementById('iPctToggle').addEventListener('click',()=>{
+      n.baseValueIsPercent=!n.baseValueIsPercent;
+      const inp=document.getElementById('iBase');
+      inp.value=n.baseValueIsPercent?parseFloat((n.baseValue*100).toFixed(8)):n.baseValue;
+      document.getElementById('iPctToggle').classList.toggle('active',n.baseValueIsPercent);
+      refreshLeaf();
+    });
+    document.getElementById('iMod').addEventListener('input',e=>{ n.modifier=parseFloat(e.target.value)||0; refreshLeaf(); });
   } else {
-    document.getElementById('iFormula').addEventListener('input',e=>{ S.formulas[id]=e.target.value; computeAll(); renderNodes(); updatePrev(id); });
+    const refreshParent=()=>{
+      computeAll(); renderNodes(); renderEdges();
+      const c2=S.computed[id]||{};
+      const fvp=(v)=>n.baseValueIsPercent?fmtPct(v):fmt(v);
+      const bvEl=document.getElementById('iBaseVal'), mvEl=document.getElementById('iModifiedVal');
+      if(bvEl) bvEl.value=fvp(c2.baseValue);
+      if(mvEl) mvEl.value=fvp(c2.modifiedValue);
+      updatePrev(id);
+    };
+    document.getElementById('iFormula').addEventListener('input',e=>{ S.formulas[id]=e.target.value; refreshParent(); });
+    document.getElementById('iMod').addEventListener('input',e=>{ n.modifier=parseFloat(e.target.value)||0; refreshParent(); });
+    document.getElementById('iPctToggle').addEventListener('click',()=>{
+      n.baseValueIsPercent=!n.baseValueIsPercent;
+      document.getElementById('iPctToggle').classList.toggle('active',n.baseValueIsPercent);
+      const c2=S.computed[id]||{};
+      const fvp=(v)=>n.baseValueIsPercent?fmtPct(v):fmt(v);
+      const bvEl=document.getElementById('iBaseVal'), mvEl=document.getElementById('iModifiedVal');
+      if(bvEl) bvEl.value=fvp(c2.baseValue);
+      if(mvEl) mvEl.value=fvp(c2.modifiedValue);
+      renderNodes();
+    });
     updatePrev(id);
   }
   document.getElementById('iDel').addEventListener('click',()=>delNode(id));
@@ -292,7 +346,7 @@ function clearSel(){ S.sel=null; if(S.connMode) S.connSrc=null; render(); }
 function addNode(){
   const id=gid(), cc=document.getElementById('cc');
   const cx=(cc.clientWidth/2-S.T.x)/S.T.s, cy=(cc.clientHeight/2-S.T.y)/S.T.s;
-  S.nodes[id]={id,name:'New Metric',x:cx-84,y:cy-44,baseValue:0,modifier:0};
+  S.nodes[id]={id,name:'New Metric',x:cx-84,y:cy-44,baseValue:0,modifier:0,baseValueIsPercent:false};
   selNode(id); render();
 }
 
