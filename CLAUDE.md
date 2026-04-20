@@ -20,11 +20,10 @@ When the work is done, push and open a PR:
 
 ```bash
 git push -u origin <branch-name>
-gh pr create --fill
+export PATH="$PATH:/c/Program Files/GitHub CLI" && gh pr create --fill
 ```
 
-If `gh` is not installed, push the branch and tell the user to open the PR at:
-https://github.com/NavarroKain/metric-tree/compare
+`gh` is installed at `C:\Program Files\GitHub CLI\gh.exe` and authenticated as NavarroKain.
 
 ## Project overview
 
