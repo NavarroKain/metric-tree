@@ -20,7 +20,6 @@ const S = {
   historyIdx: -1,
   _histTimer: null,
   fileHandle: null,
-  autoSaveInterval: null,
   savedSnapshot: null,
 };
 function gid(){ return 'n'+(S.nextId++) }
@@ -132,7 +131,7 @@ function initHistory(){
   updateUndoRedo();
 }
 
-// ── AUTO-SAVE ─────────────────────────────────────────────────────────
+// ── SAVE ─────────────────────────────────────────────────────────────
 function buildSaveData(){
   return {
     nodes:Object.values(S.nodes).map(n=>({id:n.id,name:n.name,x:n.x,y:n.y,baseValue:n.baseValue,modifier:n.modifier||0,baseValueIsPercent:n.baseValueIsPercent||false,color:n.color||null})),
@@ -148,27 +147,24 @@ function setSaveStatus(text,cls){
   el.textContent=text; el.className='save-status'+(cls?' '+cls:'');
 }
 
+function updateFileName(){
+  const el=document.getElementById('fileName');
+  if(!el) return;
+  el.textContent=S.fileHandle?S.fileHandle.name:'';
+}
+
+function updateSaveStatus(){
+  const cur=snapshotState();
+  const saved=S.savedSnapshot&&cur===S.savedSnapshot;
+  setSaveStatus(saved?'No unsaved changes':'Unsaved changes', saved?'ok':'warn');
+}
+
 async function writeToHandle(){
   const json=JSON.stringify(buildSaveData(),null,2);
   const w=await S.fileHandle.createWritable();
   await w.write(json); await w.close();
   S.savedSnapshot=snapshotState();
-  updateSaveStatus();
-}
-
-function updateSaveStatus(){
-  if(!S.savedSnapshot){ setSaveStatus('Not saved',''); return; }
-  setSaveStatus(snapshotState()===S.savedSnapshot?'No unsaved changes':'Unsaved changes',
-    snapshotState()===S.savedSnapshot?'ok':'warn');
-}
-
-function startAutoSave(){
-  if(S.autoSaveInterval) return;
-  S.autoSaveInterval=setInterval(async()=>{
-    if(!S.fileHandle) return;
-    try{ await writeToHandle(); setSaveStatus('Auto-saved '+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}),'ok'); }
-    catch(e){ setSaveStatus('Auto-save failed','err'); }
-  },5000);
+  updateSaveStatus(); updateFileName();
 }
 
 async function doSave(){
@@ -181,8 +177,20 @@ async function doSave(){
       });
     }
     await writeToHandle();
-    setSaveStatus('Saved','ok');
-    startAutoSave();
+  } catch(e){
+    if(e.name==='AbortError') return;
+    S.fileHandle=null; downloadFallback();
+  }
+}
+
+async function doSaveAs(){
+  try{
+    if(!window.showSaveFilePicker){ downloadFallback(); return; }
+    S.fileHandle=await window.showSaveFilePicker({
+      suggestedName:S.fileHandle?.name||'metric-tree.json',
+      types:[{description:'JSON',accept:{'application/json':['.json']}}],
+    });
+    await writeToHandle();
   } catch(e){
     if(e.name==='AbortError') return;
     S.fileHandle=null; downloadFallback();
@@ -193,7 +201,7 @@ function downloadFallback(){
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([JSON.stringify(buildSaveData(),null,2)],{type:'application/json'}));
   a.download='metric-tree.json'; a.click();
-  S.savedSnapshot=snapshotState(); setSaveStatus('Downloaded','ok');
+  S.savedSnapshot=snapshotState(); updateSaveStatus();
 }
 
 // ── COMPUTE ───────────────────────────────────────────────────────────
@@ -625,6 +633,7 @@ document.addEventListener('keydown',ev=>{
   const inInput=ev.target.tagName==='INPUT'||ev.target.contentEditable==='true';
   if((ev.ctrlKey||ev.metaKey)&&ev.key==='z'&&!ev.shiftKey){ ev.preventDefault(); undo(); return; }
   if((ev.ctrlKey||ev.metaKey)&&(ev.key==='y'||(ev.key==='z'&&ev.shiftKey))){ ev.preventDefault(); redo(); return; }
+  if((ev.ctrlKey||ev.metaKey)&&ev.key==='s'){ ev.preventDefault(); doSave(); return; }
   if(inInput) return;
   if(ev.key==='Delete'||ev.key==='Backspace'){
     if(S.multiSel.size>1){ for(const id of [...S.multiSel]) delNode(id); S.multiSel.clear(); }
@@ -659,6 +668,7 @@ document.getElementById('bConn').addEventListener('click',()=>{
 });
 
 document.getElementById('bSave').addEventListener('click',doSave);
+document.getElementById('bSaveAs').addEventListener('click',doSaveAs);
 
 document.getElementById('bLoad').addEventListener('click',()=>document.getElementById('fileIn').click());
 document.getElementById('fileIn').addEventListener('change',ev=>{
