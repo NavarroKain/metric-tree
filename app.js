@@ -1,12 +1,17 @@
 // ── STATE ──────────────────────────────────────────────────────────────
+const NODE_COLORS=['#ef4444','#f97316','#eab308','#22c55e','#3b82f6','#6366f1','#a855f7'];
+
 const S = {
-  nodes: {},      // id → {id,name,x,y,baseValue,modifier}
+  nodes: {},      // id → {id,name,x,y,baseValue,modifier,color}
   edges: {},      // id → {id,childId,parentId,variable}
   formulas: {},   // nodeId → expression string
   computed: {},   // nodeId → {baseValue,modifiedValue,error}
   sel: null,      // {type:'node'|'edge', id}
   connMode: false,
   connSrc: null,
+  selMode: false,
+  multiSel: new Set(),
+  rectDraw: null,
   T: {x:0, y:0, s:1},
   nextId: 1,
   drag: null,
@@ -16,6 +21,7 @@ const S = {
   _histTimer: null,
   fileHandle: null,
   autoSaveInterval: null,
+  savedSnapshot: null,
 };
 function gid(){ return 'n'+(S.nextId++) }
 
@@ -129,7 +135,7 @@ function initHistory(){
 // ── AUTO-SAVE ─────────────────────────────────────────────────────────
 function buildSaveData(){
   return {
-    nodes:Object.values(S.nodes).map(n=>({id:n.id,name:n.name,x:n.x,y:n.y,baseValue:n.baseValue,modifier:n.modifier||0,baseValueIsPercent:n.baseValueIsPercent||false})),
+    nodes:Object.values(S.nodes).map(n=>({id:n.id,name:n.name,x:n.x,y:n.y,baseValue:n.baseValue,modifier:n.modifier||0,baseValueIsPercent:n.baseValueIsPercent||false,color:n.color||null})),
     edges:Object.values(S.edges).map(e=>({id:e.id,childId:e.childId,parentId:e.parentId,variable:e.variable})),
     formulas:Object.entries(S.formulas).map(([nodeId,expression])=>({nodeId,expression})),
     _meta:{nextId:S.nextId},
@@ -146,6 +152,14 @@ async function writeToHandle(){
   const json=JSON.stringify(buildSaveData(),null,2);
   const w=await S.fileHandle.createWritable();
   await w.write(json); await w.close();
+  S.savedSnapshot=snapshotState();
+  updateSaveStatus();
+}
+
+function updateSaveStatus(){
+  if(!S.savedSnapshot){ setSaveStatus('Not saved',''); return; }
+  setSaveStatus(snapshotState()===S.savedSnapshot?'No unsaved changes':'Unsaved changes',
+    snapshotState()===S.savedSnapshot?'ok':'warn');
 }
 
 function startAutoSave(){
@@ -179,7 +193,7 @@ function downloadFallback(){
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([JSON.stringify(buildSaveData(),null,2)],{type:'application/json'}));
   a.download='metric-tree.json'; a.click();
-  setSaveStatus('Downloaded','ok');
+  S.savedSnapshot=snapshotState(); setSaveStatus('Downloaded','ok');
 }
 
 // ── COMPUTE ───────────────────────────────────────────────────────────
@@ -210,7 +224,7 @@ function computeAll(){
 }
 
 // ── RENDER ────────────────────────────────────────────────────────────
-function render(){ computeAll(); renderNodes(); renderEdges(); renderInspector(); }
+function render(){ computeAll(); renderNodes(); renderEdges(); renderInspector(); updateSaveStatus(); }
 
 function renderNodes(){
   const layer=document.getElementById('nodes-layer');
@@ -225,7 +239,9 @@ function renderNodes(){
     card.style.left=n.x+'px'; card.style.top=n.y+'px';
     const isSel=S.sel?.type==='node'&&S.sel.id===id;
     const isSrc=S.connSrc===id;
-    card.className='nc'+(isSel?' sel':'')+(isSrc?' csrc':'')+(c.error?' err':'');
+    const isMsel=S.multiSel.has(id);
+    card.className='nc'+(isSel?' sel':'')+(isSrc?' csrc':'')+(c.error?' err':'')+(isMsel?' msel':'')+(n.color?' colored':'');
+    card.style.borderLeftColor=n.color||'';
     const mod=parseFloat(n.modifier)||0;
     const hasM=mod!==0;
     const isPct=!!n.baseValueIsPercent;
@@ -255,8 +271,17 @@ function nodeH(id){
 }
 
 const NW=168;
-function portB(id){ const n=S.nodes[id]; return {x:n.x+NW/2, y:n.y+nodeH(id)} }
-function portT(id){ const n=S.nodes[id]; return {x:n.x+NW/2, y:n.y} }
+function nodeCenter(id){ const n=S.nodes[id]; return {x:n.x+NW/2, y:n.y+nodeH(id)/2}; }
+function rectExitPoint(id,tx,ty){
+  const n=S.nodes[id], hw=NW/2, hh=nodeH(id)/2;
+  const cx=n.x+hw, cy=n.y+hh;
+  const dx=tx-cx, dy=ty-cy;
+  if(!dx&&!dy) return {x:cx,y:cy,nx:0,ny:-1};
+  const tx_=dx?hw/Math.abs(dx):Infinity, ty_=dy?hh/Math.abs(dy):Infinity;
+  const t=Math.min(tx_,ty_);
+  const nx=tx_<=ty_?(dx>0?1:-1):0, ny=tx_>ty_?(dy>0?1:-1):0;
+  return {x:cx+dx*t, y:cy+dy*t, nx, ny};
+}
 function bez(t,p0,p1,p2,p3){ const m=1-t; return m*m*m*p0+3*m*m*t*p1+3*m*t*t*p2+t*t*t*p3 }
 
 function renderEdges(){
@@ -266,9 +291,14 @@ function renderEdges(){
     const ch=S.nodes[e.childId], pa=S.nodes[e.parentId];
     if(!ch||!pa) continue;
     const isSel=S.sel?.type==='edge'&&S.sel.id===e.id;
-    const b=portB(e.childId), t=portT(e.parentId);
-    const dy=Math.abs(t.y-b.y), off=Math.max(40,dy*.45);
-    const d=`M${b.x} ${b.y} C${b.x} ${b.y+off},${t.x} ${t.y-off},${t.x} ${t.y}`;
+    const cc2=nodeCenter(e.childId), cp=nodeCenter(e.parentId);
+    const start=rectExitPoint(e.childId,cp.x,cp.y);
+    const end=rectExitPoint(e.parentId,cc2.x,cc2.y);
+    const dist=Math.hypot(end.x-start.x,end.y-start.y);
+    const off=Math.max(30,dist*0.38);
+    const cp1x=start.x+start.nx*off, cp1y=start.y+start.ny*off;
+    const cp2x=end.x+end.nx*off,     cp2y=end.y+end.ny*off;
+    const d=`M${start.x} ${start.y} C${cp1x} ${cp1y},${cp2x} ${cp2y},${end.x} ${end.y}`;
     const col=isSel?'#3b82f6':'#888';
     const mk=isSel?'url(#arr-sel)':'url(#arr)';
 
@@ -285,7 +315,7 @@ function renderEdges(){
     path.style.pointerEvents='none';
     g.appendChild(path);
 
-    const mx=bez(.5,b.x,b.x,t.x,t.x), my=bez(.5,b.y,b.y+off,t.y-off,t.y);
+    const mx=bez(.5,start.x,cp1x,cp2x,end.x), my=bez(.5,start.y,cp1y,cp2y,end.y);
     const rect=ns('rect'); rect.setAttribute('x',mx-10); rect.setAttribute('y',my-10);
     rect.setAttribute('width',20); rect.setAttribute('height',20); rect.setAttribute('rx',4);
     rect.setAttribute('fill',col); rect.style.pointerEvents='none';
@@ -316,6 +346,8 @@ function inspNode(id){
   const mod=parseFloat(n.modifier)||0;
   let h=`<div class="ititle">${leaf?'Leaf Node':'Parent Node'}</div>`;
   h+=fg('Name',`<input class="fi" id="iName" type="text" value="${ea(n.name)}">`);
+  const dots=[`<span class="cdot none${!n.color?' active':''}" data-c=""></span>`,...NODE_COLORS.map(c=>`<span class="cdot${n.color===c?' active':''}" style="background:${c}" data-c="${c}"></span>`)].join('');
+  h+=fg('Color',`<div class="color-row" id="iColorRow">${dots}</div>`);
   if(leaf){
     const baseDisp=n.baseValueIsPercent?parseFloat((n.baseValue*100).toFixed(8)):n.baseValue;
     h+=fg('Base Value',`<div class="fi-row"><input class="fi" id="iBase" type="number" step="any" value="${baseDisp}"><button class="pct-toggle${n.baseValueIsPercent?' active':''}" id="iPctToggle">%</button></div>`);
@@ -343,6 +375,12 @@ function inspNode(id){
   cont.innerHTML=h;
 
   document.getElementById('iName').addEventListener('input',e=>{ n.name=e.target.value; renderNodes(); renderEdges(); scheduleHistory(); });
+  document.getElementById('iColorRow').addEventListener('click',e=>{
+    const dot=e.target.closest('.cdot'); if(!dot) return;
+    n.color=dot.dataset.c||null;
+    dot.parentNode.querySelectorAll('.cdot').forEach(d=>d.classList.toggle('active',d===dot));
+    renderNodes(); pushHistory();
+  });
   if(leaf){
     const refreshLeaf=()=>{
       computeAll(); renderNodes(); renderEdges();
@@ -432,6 +470,12 @@ function bindCard(card){
     if(ev.shiftKey && S.sel?.type==='node' && S.sel.id!==id){ connect(S.sel.id,id); return; }
     if(S.connMode && S.connSrc && S.connSrc!==id){ connect(S.connSrc,id); return; }
     if(S.connMode && !S.connSrc){ S.connSrc=id; render(); return; }
+    if(S.multiSel.has(id)&&S.multiSel.size>1){
+      S.drag={id,sx:ev.clientX,sy:ev.clientY,ox:S.nodes[id].x,oy:S.nodes[id].y,
+        multi:Array.from(S.multiSel).map(nid=>({id:nid,ox:S.nodes[nid].x,oy:S.nodes[nid].y}))};
+      return;
+    }
+    S.multiSel.clear();
     selNode(id);
     S.drag={id, sx:ev.clientX, sy:ev.clientY, ox:S.nodes[id].x, oy:S.nodes[id].y};
   });
@@ -458,7 +502,7 @@ function clearSel(){ S.sel=null; if(S.connMode) S.connSrc=null; render(); }
 function addNode(){
   const id=gid(), cc=document.getElementById('cc');
   const cx=(cc.clientWidth/2-S.T.x)/S.T.s, cy=(cc.clientHeight/2-S.T.y)/S.T.s;
-  S.nodes[id]={id,name:'New Metric',x:cx-84,y:cy-44,baseValue:0,modifier:0,baseValueIsPercent:false};
+  S.nodes[id]={id,name:'New Metric',x:cx-84,y:cy-44,baseValue:0,modifier:0,baseValueIsPercent:false,color:null};
   selNode(id); render(); pushHistory();
 }
 
@@ -514,10 +558,28 @@ cc.addEventListener('wheel',ev=>{
   applyT();
 },{passive:false});
 
+function toCanvas(clientX,clientY){ const r=cc.getBoundingClientRect(); return {x:(clientX-r.left-S.T.x)/S.T.s, y:(clientY-r.top-S.T.y)/S.T.s}; }
+
+function updateSelRect(){
+  const sr=document.getElementById('sel-rect'); if(!sr||!S.rectDraw){if(sr)sr.style.display='none';return;}
+  const {sx,sy,ex,ey}=S.rectDraw;
+  const x=Math.min(sx,ex),y=Math.min(sy,ey),w=Math.abs(ex-sx),h=Math.abs(ey-sy);
+  sr.setAttribute('x',x);sr.setAttribute('y',y);sr.setAttribute('width',w);sr.setAttribute('height',h);sr.style.display='';
+  S.multiSel.clear();
+  for(const[id,n]of Object.entries(S.nodes)){if(n.x+NW>x&&n.x<x+w&&n.y+nodeH(id)>y&&n.y<y+h) S.multiSel.add(id);}
+  renderNodes();
+}
+
 cc.addEventListener('mousedown',ev=>{
   if(ev.target!==cc&&ev.target!==document.getElementById('canvas')&&!ev.target.closest('#svg-layer')) return;
   if(ev.button!==0) return;
-  if(!ev.shiftKey){ S.sel=null; if(S.connMode) S.connSrc=null; renderInspector(); renderNodes(); }
+  if(S.selMode){
+    if(!ev.shiftKey){ S.sel=null; S.multiSel.clear(); if(S.connMode) S.connSrc=null; renderInspector(); renderNodes(); }
+    const p=toCanvas(ev.clientX,ev.clientY);
+    S.rectDraw={sx:p.x,sy:p.y,ex:p.x,ey:p.y};
+    return;
+  }
+  if(!ev.shiftKey){ S.sel=null; S.multiSel.clear(); if(S.connMode) S.connSrc=null; renderInspector(); renderNodes(); }
   S.pan={sx:ev.clientX,sy:ev.clientY,ox:S.T.x,oy:S.T.y};
   cc.classList.add('panning');
 });
@@ -525,11 +587,22 @@ cc.addEventListener('mousedown',ev=>{
 document.addEventListener('mousemove',ev=>{
   if(S.drag){
     const dx=(ev.clientX-S.drag.sx)/S.T.s, dy=(ev.clientY-S.drag.sy)/S.T.s;
-    const n=S.nodes[S.drag.id]; n.x=S.drag.ox+dx; n.y=S.drag.oy+dy;
-    const card=document.querySelector(`.nc[data-id="${S.drag.id}"]`);
-    if(card){card.style.left=n.x+'px';card.style.top=n.y+'px';}
-    renderEdges();
-    return;
+    if(S.drag.multi){
+      for(const m of S.drag.multi){
+        S.nodes[m.id].x=m.ox+dx; S.nodes[m.id].y=m.oy+dy;
+        const card=document.querySelector(`.nc[data-id="${m.id}"]`);
+        if(card){card.style.left=S.nodes[m.id].x+'px';card.style.top=S.nodes[m.id].y+'px';}
+      }
+    } else {
+      const n=S.nodes[S.drag.id]; n.x=S.drag.ox+dx; n.y=S.drag.oy+dy;
+      const card=document.querySelector(`.nc[data-id="${S.drag.id}"]`);
+      if(card){card.style.left=n.x+'px';card.style.top=n.y+'px';}
+    }
+    renderEdges(); return;
+  }
+  if(S.rectDraw){
+    const p=toCanvas(ev.clientX,ev.clientY); S.rectDraw.ex=p.x; S.rectDraw.ey=p.y;
+    updateSelRect(); return;
   }
   if(S.pan){
     S.T.x=S.pan.ox+(ev.clientX-S.pan.sx); S.T.y=S.pan.oy+(ev.clientY-S.pan.sy);
@@ -539,6 +612,12 @@ document.addEventListener('mousemove',ev=>{
 
 document.addEventListener('mouseup',()=>{
   if(S.drag) pushHistory();
+  if(S.rectDraw){
+    const {sx,sy,ex,ey}=S.rectDraw;
+    if(Math.abs(ex-sx)<4&&Math.abs(ey-sy)<4){ S.multiSel.clear(); renderNodes(); }
+    document.getElementById('sel-rect').style.display='none';
+    S.rectDraw=null;
+  }
   S.drag=null; S.pan=null; cc.classList.remove('panning');
 });
 
@@ -547,12 +626,14 @@ document.addEventListener('keydown',ev=>{
   if((ev.ctrlKey||ev.metaKey)&&ev.key==='z'&&!ev.shiftKey){ ev.preventDefault(); undo(); return; }
   if((ev.ctrlKey||ev.metaKey)&&(ev.key==='y'||(ev.key==='z'&&ev.shiftKey))){ ev.preventDefault(); redo(); return; }
   if(inInput) return;
-  if((ev.key==='Delete'||ev.key==='Backspace')&&S.sel){
-    if(S.sel.type==='node') delNode(S.sel.id);
-    else removeEdge(S.sel.id);
+  if(ev.key==='Delete'||ev.key==='Backspace'){
+    if(S.multiSel.size>1){ for(const id of [...S.multiSel]) delNode(id); S.multiSel.clear(); }
+    else if(S.sel){ if(S.sel.type==='node') delNode(S.sel.id); else removeEdge(S.sel.id); }
   }
   if(ev.key==='Escape'){
+    S.multiSel.clear(); renderNodes();
     clearSel();
+    if(S.selMode){ S.selMode=false; document.getElementById('bSel').classList.remove('active'); cc.classList.remove('sel-mode'); }
     if(S.connMode){ S.connMode=false; S.connSrc=null; document.getElementById('bConn').classList.remove('active'); cc.classList.remove('connect-mode'); setHint(''); render(); }
   }
 });
@@ -561,6 +642,13 @@ document.addEventListener('keydown',ev=>{
 document.getElementById('bAdd').addEventListener('click',addNode);
 document.getElementById('bUndo').addEventListener('click',undo);
 document.getElementById('bRedo').addEventListener('click',redo);
+document.getElementById('bSel').addEventListener('click',()=>{
+  S.selMode=!S.selMode;
+  document.getElementById('bSel').classList.toggle('active',S.selMode);
+  cc.classList.toggle('sel-mode',S.selMode);
+  if(!S.selMode){ S.multiSel.clear(); renderNodes(); }
+  if(S.selMode&&S.connMode){ S.connMode=false; document.getElementById('bConn').classList.remove('active'); cc.classList.remove('connect-mode'); setHint(''); }
+});
 
 document.getElementById('bConn').addEventListener('click',()=>{
   S.connMode=!S.connMode; S.connSrc=null;
@@ -584,7 +672,7 @@ document.getElementById('fileIn').addEventListener('change',ev=>{
       for(const e of d.edges||[]) S.edges[e.id]=e;
       for(const f of d.formulas||[]) S.formulas[f.nodeId]=f.expression;
       if(d._meta?.nextId) S.nextId=d._meta.nextId;
-      render(); initHistory();
+      render(); initHistory(); S.savedSnapshot=snapshotState(); updateSaveStatus();
     } catch(err){ alert('Failed to load: '+err.message); }
   };
   r.readAsText(f); ev.target.value='';

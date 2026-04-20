@@ -10,6 +10,7 @@
   <h1>Metric Tree</h1>
   <button class="btn primary" id="bAdd">+ Add Node</button>
   <button class="btn" id="bConn">Connect</button>
+  <button class="btn" id="bSel">Select</button>
   <div class="sep"></div>
   <button class="btn" id="bUndo" disabled>Undo</button>
   <button class="btn" id="bRedo" disabled>Redo</button>
@@ -35,6 +36,7 @@
           </marker>
         </defs>
         <g id="edges-g"></g>
+        <rect id="sel-rect" fill="rgba(59,130,246,0.08)" stroke="#3b82f6" stroke-width="1" stroke-dasharray="5,3" style="display:none" pointer-events="none"/>
       </svg>
       <div id="nodes-layer"></div>
     </div>
