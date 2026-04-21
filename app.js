@@ -72,12 +72,14 @@ function evalFormula(expr, vars){
 
 function fmt(v){
   if(v===null||v===undefined||isNaN(v)) return '—';
-  return parseFloat(v.toFixed(3)).toString();
+  const rounded=parseFloat(v.toFixed(3));
+  return rounded.toLocaleString('ru-RU',{maximumFractionDigits:3});
 }
 
 function fmtPct(v){
   if(v===null||v===undefined||isNaN(v)) return '—';
-  return parseFloat((v*100).toFixed(3)).toString()+'%';
+  const rounded=parseFloat((v*100).toFixed(3));
+  return rounded.toLocaleString('ru-RU',{maximumFractionDigits:3})+'%';
 }
 
 // ── HISTORY (UNDO/REDO) ───────────────────────────────────────────────
