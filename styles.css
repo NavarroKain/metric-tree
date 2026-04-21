@@ -95,3 +95,29 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .fprev.ferr{border-color:var(--error);color:var(--error)}
 .divider{border:none;border-top:1px solid var(--border);margin:14px 0}
 .empty{color:var(--muted);font-size:13px;text-align:center;padding:40px 16px;line-height:1.7}
+
+/* INITIATIVE BANNER */
+#init-banner{display:flex;align-items:center;gap:10px;padding:6px 14px;background:#6d28d9;color:#fff;font-size:13px;flex-shrink:0;z-index:10}
+#init-banner .btn{padding:3px 9px;border-color:rgba(255,255,255,.35);background:transparent;color:#fff;font-size:12px}
+#init-banner .btn:hover{background:rgba(255,255,255,.15)}
+#init-banner strong{font-weight:600}
+
+/* INITIATIVE NODE HIGHLIGHTS */
+.nc.init-changed{border-color:var(--amber);border-width:2px}
+.nc.init-affected{border-color:var(--amber);border-width:2px;opacity:.8}
+
+/* INITIATIVE INSPECTOR FIELDS */
+.init-label{color:var(--amber)!important}
+.fi.init-field{border-color:var(--amber)}
+.fi.init-field:focus{border-color:var(--amber);outline:none}
+.init-reset-btn{margin-top:5px;font-size:11px;color:var(--error);border-color:var(--error);background:transparent;padding:3px 8px;width:100%;cursor:pointer;border-radius:6px;border:1px solid}
+.init-reset-btn:hover{background:var(--error);color:#fff}
+
+/* INITIATIVE PANEL (in inspector empty state) */
+.init-panel{padding:0}
+.init-item{display:flex;align-items:center;gap:6px;padding:8px 6px 8px 10px;border-radius:6px;border:1px solid var(--border);margin-bottom:6px;background:var(--surface)}
+.init-item.active{border-color:var(--amber)}
+.init-item-name{font-size:13px;font-weight:500;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.init-item-btns{display:flex;gap:4px;flex-shrink:0}
+.init-item-btns .btn{padding:3px 7px;font-size:11px}
+.init-ov-badge{display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:15px;background:var(--amber);color:#fff;border-radius:8px;font-size:10px;font-weight:700;padding:0 4px;margin-left:5px;vertical-align:middle}

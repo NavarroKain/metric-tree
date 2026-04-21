@@ -5,7 +5,9 @@ const S = {
   nodes: {},      // id → {id,name,x,y,baseValue,modifier,color}
   edges: {},      // id → {id,childId,parentId,variable}
   formulas: {},   // nodeId → expression string
-  computed: {},   // nodeId → {baseValue,modifiedValue,error}
+  computed: {},   // nodeId → {baseValue,modifiedValue,initiativeValue,hasOverride,error}
+  initiatives: {},     // id → {id,name,overrides:{nodeId→modifier}}
+  activeInitiativeId: null,
   sel: null,      // {type:'node'|'edge', id}
   connMode: false,
   connSrc: null,
@@ -84,7 +86,7 @@ function fmtPct(v){
 
 // ── HISTORY (UNDO/REDO) ───────────────────────────────────────────────
 function snapshotState(){
-  return JSON.stringify({nodes:S.nodes,edges:S.edges,formulas:S.formulas,nextId:S.nextId});
+  return JSON.stringify({nodes:S.nodes,edges:S.edges,formulas:S.formulas,initiatives:S.initiatives,nextId:S.nextId});
 }
 
 function pushHistory(){
@@ -104,8 +106,10 @@ function scheduleHistory(){
 function restoreState(snap){
   const d=JSON.parse(snap);
   S.nodes=d.nodes; S.edges=d.edges; S.formulas=d.formulas; S.nextId=d.nextId;
+  S.initiatives=d.initiatives||{};
+  if(S.activeInitiativeId&&!S.initiatives[S.activeInitiativeId]) S.activeInitiativeId=null;
   S.sel=null; S.connSrc=null;
-  render();
+  updateInitBanner(); render();
 }
 
 function undo(){
@@ -139,6 +143,7 @@ function buildSaveData(){
     nodes:Object.values(S.nodes).map(n=>({id:n.id,name:n.name,x:n.x,y:n.y,baseValue:n.baseValue,modifier:n.modifier||0,baseValueIsPercent:n.baseValueIsPercent||false,color:n.color||null})),
     edges:Object.values(S.edges).map(e=>({id:e.id,childId:e.childId,parentId:e.parentId,variable:e.variable})),
     formulas:Object.entries(S.formulas).map(([nodeId,expression])=>({nodeId,expression})),
+    initiatives:Object.values(S.initiatives),
     _meta:{nextId:S.nextId},
   };
 }
@@ -209,26 +214,32 @@ function downloadFallback(){
 // ── COMPUTE ───────────────────────────────────────────────────────────
 function computeAll(){
   S.computed={};
+  const initiative=S.activeInitiativeId?S.initiatives[S.activeInitiativeId]:null;
+  const overrides=initiative?.overrides||{};
   for(const id of topoSort()){
     const n=S.nodes[id]; if(!n) continue;
+    const ownMod=parseFloat(n.modifier)||0;
+    const hasOverride=!!(initiative&&(id in overrides));
+    const initMod=hasOverride?(parseFloat(overrides[id])||0):ownMod;
     if(isLeaf(id)){
-      const b=parseFloat(n.baseValue)||0, m=parseFloat(n.modifier)||0;
-      S.computed[id]={baseValue:b, modifiedValue:b*(1+m/100), error:null};
+      const b=parseFloat(n.baseValue)||0;
+      S.computed[id]={baseValue:b, modifiedValue:b*(1+ownMod/100), initiativeValue:initiative?b*(1+initMod/100):null, hasOverride, error:null};
     } else {
       const ch=childEdges(id), expr=S.formulas[id]||'';
-      if(!expr.trim()){ S.computed[id]={baseValue:null,modifiedValue:null,error:'No formula'}; continue; }
+      if(!expr.trim()){ S.computed[id]={baseValue:null,modifiedValue:null,initiativeValue:null,hasOverride,error:'No formula'}; continue; }
       try {
-        const bv={}, mv={};
+        const bv={}, mv={}, iv={};
         for(const e of ch){
           const c=S.computed[e.childId];
           if(!c||c.error!==null) throw new Error('Child error');
           bv[e.variable]=c.baseValue; mv[e.variable]=c.modifiedValue;
+          if(initiative) iv[e.variable]=c.initiativeValue??c.modifiedValue;
         }
         const base=evalFormula(expr,bv);
-        const ownMod=parseFloat(n.modifier)||0;
         const modified=evalFormula(expr,mv)*(1+ownMod/100);
-        S.computed[id]={baseValue:base, modifiedValue:modified, error:null};
-      } catch(err){ S.computed[id]={baseValue:null,modifiedValue:null,error:err.message}; }
+        const initiativeValue=initiative?evalFormula(expr,iv)*(1+initMod/100):null;
+        S.computed[id]={baseValue:base, modifiedValue:modified, initiativeValue, hasOverride, error:null};
+      } catch(err){ S.computed[id]={baseValue:null,modifiedValue:null,initiativeValue:null,hasOverride,error:err.message}; }
     }
   }
 }
@@ -241,30 +252,44 @@ function renderNodes(){
   const existing={};
   for(const el of layer.children) existing[el.dataset.id]=el;
   for(const id of Object.keys(existing)) if(!S.nodes[id]){ layer.removeChild(existing[id]); delete existing[id]; }
+  const initiative=S.activeInitiativeId?S.initiatives[S.activeInitiativeId]:null;
 
   for(const id of Object.keys(S.nodes)){
-    const n=S.nodes[id], c=S.computed[id]||{}, leaf=isLeaf(id);
+    const n=S.nodes[id], c=S.computed[id]||{};
     let card=existing[id];
     if(!card){ card=document.createElement('div'); card.className='nc'; card.dataset.id=id; layer.appendChild(card); bindCard(card); }
     card.style.left=n.x+'px'; card.style.top=n.y+'px';
     const isSel=S.sel?.type==='node'&&S.sel.id===id;
     const isSrc=S.connSrc===id;
     const isMsel=S.multiSel.has(id);
-    card.className='nc'+(isSel?' sel':'')+(isSrc?' csrc':'')+(c.error?' err':'')+(isMsel?' msel':'')+(n.color?' colored':'');
+    const initDelta=c.initiativeValue!=null&&c.modifiedValue!=null?c.initiativeValue-c.modifiedValue:null;
+    const isInitAffected=initiative&&!c.hasOverride&&initDelta!==null&&Math.abs(initDelta)>1e-9;
+    card.className='nc'+(isSel?' sel':'')+(isSrc?' csrc':'')+(c.error?' err':'')+(isMsel?' msel':'')+(n.color?' colored':'')+(c.hasOverride?' init-changed':isInitAffected?' init-affected':'');
     card.style.borderLeftColor=n.color||'';
-    const mod=parseFloat(n.modifier)||0;
-    const hasM=mod!==0;
     const isPct=!!n.baseValueIsPercent;
-    const delta=(c.baseValue!=null&&c.modifiedValue!=null&&!c.error)?(c.modifiedValue-c.baseValue):null;
-    const hasDelta=delta!==null&&Math.abs(delta)>1e-9;
-    const deltaPct=(hasDelta&&c.baseValue!=null&&Math.abs(c.baseValue)>1e-9)?(delta/c.baseValue*100):null;
     const fv=(v)=>isPct?fmtPct(v):fmt(v);
     let h=`<div class="nh">${esc(n.name)}</div><div class="nb">`;
-    h+=`<div class="nr"><span class="nl">Base</span><span class="nv">${fv(c.baseValue)}</span></div>`;
-    h+=`<div class="nr"><span class="nl">Modified</span><span class="nv ${hasDelta?'amber':''}">${fv(c.modifiedValue)}</span></div>`;
-    h+=`<div class="nr"><span class="nl">Modifier</span><span class="nm ${hasM?'nz':''}">${mod>0?'+':''}${fmt(mod)}%</span></div>`;
-    if(hasDelta){ const sign=delta>0?'+':''; h+=`<div class="nr"><span class="nl">Δ</span><span class="nv ${delta>0?'pos':'neg'}">${sign}${fv(delta)}</span></div>`; }
-    if(deltaPct!==null){ const sign=deltaPct>0?'+':''; h+=`<div class="nr"><span class="nl">Δ%</span><span class="nv ${deltaPct>0?'pos':'neg'}">${sign}${fmt(deltaPct)}%</span></div>`; }
+    if(initiative&&c.initiativeValue!=null&&!c.error){
+      h+=`<div class="nr"><span class="nl">Base</span><span class="nv">${fv(c.baseValue)}</span></div>`;
+      h+=`<div class="nr"><span class="nl">Main</span><span class="nv">${fv(c.modifiedValue)}</span></div>`;
+      const noChange=initDelta===null||Math.abs(initDelta)<1e-9;
+      h+=`<div class="nr"><span class="nl">Initiative</span><span class="nv ${noChange?'':'amber'}">${fv(c.initiativeValue)}</span></div>`;
+      if(!noChange){
+        const initDeltaPct=(Math.abs(c.modifiedValue)>1e-9)?(initDelta/c.modifiedValue*100):null;
+        const sign=initDelta>0?'+':'';
+        if(initDeltaPct!==null) h+=`<div class="nr"><span class="nl">Δ init</span><span class="nv ${initDelta>0?'pos':'neg'}">${sign}${fmt(initDeltaPct)}%</span></div>`;
+      }
+    } else {
+      const mod=parseFloat(n.modifier)||0, hasM=mod!==0;
+      const delta=(c.baseValue!=null&&c.modifiedValue!=null&&!c.error)?(c.modifiedValue-c.baseValue):null;
+      const hasDelta=delta!==null&&Math.abs(delta)>1e-9;
+      const deltaPct=(hasDelta&&c.baseValue!=null&&Math.abs(c.baseValue)>1e-9)?(delta/c.baseValue*100):null;
+      h+=`<div class="nr"><span class="nl">Base</span><span class="nv">${fv(c.baseValue)}</span></div>`;
+      h+=`<div class="nr"><span class="nl">Modified</span><span class="nv ${hasDelta?'amber':''}">${fv(c.modifiedValue)}</span></div>`;
+      h+=`<div class="nr"><span class="nl">Modifier</span><span class="nm ${hasM?'nz':''}">${mod>0?'+':''}${fmt(mod)}%</span></div>`;
+      if(hasDelta){ const sign=delta>0?'+':''; h+=`<div class="nr"><span class="nl">Δ</span><span class="nv ${delta>0?'pos':'neg'}">${sign}${fv(delta)}</span></div>`; }
+      if(deltaPct!==null){ const sign=deltaPct>0?'+':''; h+=`<div class="nr"><span class="nl">Δ%</span><span class="nv ${deltaPct>0?'pos':'neg'}">${sign}${fmt(deltaPct)}%</span></div>`; }
+    }
     h+=`</div>`;
     if(c.error) h+=`<div class="nerr">${esc(c.error)}</div>`;
     card.innerHTML=h;
@@ -274,10 +299,14 @@ function renderNodes(){
 function nodeH(id){
   const c=S.computed[id]||{}, n=S.nodes[id];
   if(!n) return 88;
+  if(S.activeInitiativeId&&c.initiativeValue!=null&&!c.error){
+    const initDelta=Math.abs((c.initiativeValue??0)-(c.modifiedValue??0))>1e-9;
+    return 36+6+18+18+18+(initDelta?18:0)+14; // header+pad+base+main+initiative+[Δ]+bottom
+  }
   const delta=(c.baseValue!=null&&c.modifiedValue!=null&&!c.error)?(c.modifiedValue-c.baseValue):null;
   const hasDelta=delta!==null&&Math.abs(delta)>1e-9;
   const hasDeltaPct=hasDelta&&c.baseValue!=null&&Math.abs(c.baseValue)>1e-9;
-  let h=36+6+18+18+18; // header+padding+base+modified+modifier
+  let h=36+6+18+18+18;
   if(hasDelta) h+=18;
   if(hasDeltaPct) h+=18;
   if(c.error) h+=24;
@@ -348,7 +377,7 @@ function ns(tag){ return document.createElementNS('http://www.w3.org/2000/svg',t
 // ── INSPECTOR ─────────────────────────────────────────────────────────
 function renderInspector(){
   const empty=document.getElementById('iEmpty'), cont=document.getElementById('iContent');
-  if(!S.sel){ empty.style.display=''; cont.style.display='none'; return; }
+  if(!S.sel){ empty.style.display=''; cont.style.display='none'; renderInitiativesPanel(); return; }
   empty.style.display='none'; cont.style.display='';
   S.sel.type==='node'?inspNode(S.sel.id):inspEdge(S.sel.id);
 }
@@ -358,16 +387,28 @@ function inspNode(id){
   const cont=document.getElementById('iContent');
   const c=S.computed[id]||{}, leaf=isLeaf(id);
   const mod=parseFloat(n.modifier)||0;
+  const initiative=S.activeInitiativeId?S.initiatives[S.activeInitiativeId]:null;
+  const hasOverride=!!(initiative&&(id in initiative.overrides));
+  const overrideMod=hasOverride?(parseFloat(initiative.overrides[id])||0):mod;
+  const fv=(v)=>n.baseValueIsPercent?fmtPct(v):fmt(v);
+
   let h=`<div class="ititle">${leaf?'Leaf Node':'Parent Node'}</div>`;
   h+=fg('Name',`<input class="fi" id="iName" type="text" value="${ea(n.name)}">`);
-  const dots=[`<span class="cdot none${!n.color?' active':''}" data-c=""></span>`,...NODE_COLORS.map(c=>`<span class="cdot${n.color===c?' active':''}" style="background:${c}" data-c="${c}"></span>`)].join('');
+  const dots=[`<span class="cdot none${!n.color?' active':''}" data-c=""></span>`,...NODE_COLORS.map(col=>`<span class="cdot${n.color===col?' active':''}" style="background:${col}" data-c="${col}"></span>`)].join('');
   h+=fg('Color',`<div class="color-row" id="iColorRow">${dots}</div>`);
+
   if(leaf){
     const baseDisp=n.baseValueIsPercent?parseFloat((n.baseValue*100).toFixed(8)):n.baseValue;
     h+=fg('Base Value',`<div class="fi-row"><input class="fi" id="iBase" type="number" step="any" value="${baseDisp}"><button class="pct-toggle${n.baseValueIsPercent?' active':''}" id="iPctToggle">%</button></div>`);
-    h+=fg('Modifier',`<div class="fi-row"><input class="fi" id="iMod" type="number" value="${mod}" step="any"><span class="fsufx">%</span></div>`);
-    const modVal=n.baseValueIsPercent?fmtPct(c.modifiedValue):fmt(c.modifiedValue);
-    h+=fg('Modified Value (computed)',`<input class="fi" id="iModVal" type="text" value="${modVal}" readonly>`);
+    if(initiative){
+      h+=fg('Modifier (main)',`<input class="fi" type="text" value="${mod>0?'+':''}${fmt(mod)}%" readonly>`);
+      h+=`<div class="fg"><div class="fl init-label">Modifier (initiative)</div><div class="fi-row"><input class="fi init-field" id="iInitMod" type="number" value="${overrideMod}" step="any"><span class="fsufx">%</span></div>${hasOverride?`<button class="btn init-reset-btn" id="iInitReset">↩ Reset to main (${fmt(mod)}%)</button>`:''}</div>`;
+      h+=fg('Modified (main)',`<input class="fi" id="iModMainVal" type="text" value="${fv(c.modifiedValue)}" readonly>`);
+      h+=fg('Initiative (computed)',`<input class="fi init-field" id="iInitVal" type="text" value="${fv(c.initiativeValue)}" readonly>`);
+    } else {
+      h+=fg('Modifier',`<div class="fi-row"><input class="fi" id="iMod" type="number" value="${mod}" step="any"><span class="fsufx">%</span></div>`);
+      h+=fg('Modified Value (computed)',`<input class="fi" id="iModVal" type="text" value="${fv(c.modifiedValue)}" readonly>`);
+    }
   } else {
     const expr=S.formulas[id]||'';
     h+=fg('Formula',`<input class="fi" id="iFormula" type="text" value="${ea(expr)}" placeholder="e.g. A * B">`);
@@ -380,10 +421,17 @@ function inspNode(id){
     }
     h+=`</div></div>`;
     h+=fg('Formula Preview',`<div class="fprev" id="iPrev">—</div>`);
-    h+=fg('Modifier',`<div class="fi-row"><input class="fi" id="iMod" type="number" value="${mod}" step="any"><span class="fsufx">%</span></div>`);
-    const fv2=(v)=>n.baseValueIsPercent?fmtPct(v):fmt(v);
-    h+=fg('Base (computed)',`<div class="fi-row"><input class="fi" id="iBaseVal" type="text" value="${fv2(c.baseValue)}" readonly><button class="pct-toggle${n.baseValueIsPercent?' active':''}" id="iPctToggle">%</button></div>`);
-    h+=fg('Modified (computed)',`<input class="fi" id="iModifiedVal" type="text" value="${fv2(c.modifiedValue)}" readonly>`);
+    if(initiative){
+      h+=fg('Modifier (main)',`<input class="fi" type="text" value="${mod>0?'+':''}${fmt(mod)}%" readonly>`);
+      h+=`<div class="fg"><div class="fl init-label">Modifier (initiative)</div><div class="fi-row"><input class="fi init-field" id="iInitMod" type="number" value="${overrideMod}" step="any"><span class="fsufx">%</span></div>${hasOverride?`<button class="btn init-reset-btn" id="iInitReset">↩ Reset to main (${fmt(mod)}%)</button>`:''}</div>`;
+      h+=fg('Base (computed)',`<div class="fi-row"><input class="fi" id="iBaseVal" type="text" value="${fv(c.baseValue)}" readonly><button class="pct-toggle${n.baseValueIsPercent?' active':''}" id="iPctToggle">%</button></div>`);
+      h+=fg('Modified (main)',`<input class="fi" id="iModMainVal" type="text" value="${fv(c.modifiedValue)}" readonly>`);
+      h+=fg('Initiative (computed)',`<input class="fi init-field" id="iInitVal" type="text" value="${fv(c.initiativeValue)}" readonly>`);
+    } else {
+      h+=fg('Modifier',`<div class="fi-row"><input class="fi" id="iMod" type="number" value="${mod}" step="any"><span class="fsufx">%</span></div>`);
+      h+=fg('Base (computed)',`<div class="fi-row"><input class="fi" id="iBaseVal" type="text" value="${fv(c.baseValue)}" readonly><button class="pct-toggle${n.baseValueIsPercent?' active':''}" id="iPctToggle">%</button></div>`);
+      h+=fg('Modified (computed)',`<input class="fi" id="iModifiedVal" type="text" value="${fv(c.modifiedValue)}" readonly>`);
+    }
   }
   h+=`<hr class="divider"><button class="btn danger" id="iDel" style="width:100%">Delete Node</button>`;
   cont.innerHTML=h;
@@ -395,11 +443,15 @@ function inspNode(id){
     dot.parentNode.querySelectorAll('.cdot').forEach(d=>d.classList.toggle('active',d===dot));
     renderNodes(); pushHistory();
   });
+
   if(leaf){
     const refreshLeaf=()=>{
       computeAll(); renderNodes(); renderEdges();
-      const mv=document.getElementById('iModVal');
-      if(mv){ const c2=S.computed[id]||{}; mv.value=n.baseValueIsPercent?fmtPct(c2.modifiedValue):fmt(c2.modifiedValue); }
+      const c2=S.computed[id]||{};
+      const mv=document.getElementById('iModVal'), mm=document.getElementById('iModMainVal'), iv=document.getElementById('iInitVal');
+      if(mv) mv.value=fv(c2.modifiedValue);
+      if(mm) mm.value=fv(c2.modifiedValue);
+      if(iv) iv.value=fv(c2.initiativeValue);
     };
     document.getElementById('iBase').addEventListener('input',e=>{
       const val=parseFloat(e.target.value)||0;
@@ -413,29 +465,38 @@ function inspNode(id){
       document.getElementById('iPctToggle').classList.toggle('active',n.baseValueIsPercent);
       refreshLeaf(); pushHistory();
     });
-    document.getElementById('iMod').addEventListener('input',e=>{ n.modifier=parseFloat(e.target.value)||0; refreshLeaf(); scheduleHistory(); });
+    if(initiative){
+      document.getElementById('iInitMod').addEventListener('input',e=>{ setInitiativeOverride(id,parseFloat(e.target.value)||0); refreshLeaf(); });
+      const rb=document.getElementById('iInitReset');
+      if(rb) rb.addEventListener('click',()=>clearInitiativeOverride(id));
+    } else {
+      document.getElementById('iMod').addEventListener('input',e=>{ n.modifier=parseFloat(e.target.value)||0; refreshLeaf(); scheduleHistory(); });
+    }
   } else {
     const refreshParent=()=>{
       computeAll(); renderNodes(); renderEdges();
       const c2=S.computed[id]||{};
-      const fvp=(v)=>n.baseValueIsPercent?fmtPct(v):fmt(v);
       const bvEl=document.getElementById('iBaseVal'), mvEl=document.getElementById('iModifiedVal');
-      if(bvEl) bvEl.value=fvp(c2.baseValue);
-      if(mvEl) mvEl.value=fvp(c2.modifiedValue);
+      const mmEl=document.getElementById('iModMainVal'), ivEl=document.getElementById('iInitVal');
+      if(bvEl) bvEl.value=fv(c2.baseValue);
+      if(mvEl) mvEl.value=fv(c2.modifiedValue);
+      if(mmEl) mmEl.value=fv(c2.modifiedValue);
+      if(ivEl) ivEl.value=fv(c2.initiativeValue);
       updatePrev(id);
     };
     document.getElementById('iFormula').addEventListener('input',e=>{ S.formulas[id]=e.target.value; refreshParent(); scheduleHistory(); });
-    document.getElementById('iMod').addEventListener('input',e=>{ n.modifier=parseFloat(e.target.value)||0; refreshParent(); scheduleHistory(); });
     document.getElementById('iPctToggle').addEventListener('click',()=>{
       n.baseValueIsPercent=!n.baseValueIsPercent;
       document.getElementById('iPctToggle').classList.toggle('active',n.baseValueIsPercent);
-      const c2=S.computed[id]||{};
-      const fvp=(v)=>n.baseValueIsPercent?fmtPct(v):fmt(v);
-      const bvEl=document.getElementById('iBaseVal'), mvEl=document.getElementById('iModifiedVal');
-      if(bvEl) bvEl.value=fvp(c2.baseValue);
-      if(mvEl) mvEl.value=fvp(c2.modifiedValue);
-      renderNodes(); pushHistory();
+      refreshParent(); pushHistory();
     });
+    if(initiative){
+      document.getElementById('iInitMod').addEventListener('input',e=>{ setInitiativeOverride(id,parseFloat(e.target.value)||0); refreshParent(); });
+      const rb=document.getElementById('iInitReset');
+      if(rb) rb.addEventListener('click',()=>clearInitiativeOverride(id));
+    } else {
+      document.getElementById('iMod').addEventListener('input',e=>{ n.modifier=parseFloat(e.target.value)||0; refreshParent(); scheduleHistory(); });
+    }
     updatePrev(id);
   }
   document.getElementById('iDel').addEventListener('click',()=>delNode(id));
@@ -684,22 +745,123 @@ document.getElementById('fileIn').addEventListener('change',ev=>{
     try {
       const d=JSON.parse(e.target.result);
       S.nodes={}; S.edges={}; S.formulas={}; S.computed={}; S.sel=null;
+      S.initiatives={}; S.activeInitiativeId=null;
       for(const n of d.nodes||[]) S.nodes[n.id]=n;
       for(const e of d.edges||[]) S.edges[e.id]=e;
       for(const f of d.formulas||[]) S.formulas[f.nodeId]=f.expression;
+      for(const i of d.initiatives||[]) S.initiatives[i.id]=i;
       if(d._meta?.nextId) S.nextId=d._meta.nextId;
-      render(); initHistory(); S.savedSnapshot=snapshotState(); updateSaveStatus();
+      updateInitBanner(); render(); initHistory(); S.savedSnapshot=snapshotState(); updateSaveStatus();
     } catch(err){ alert('Failed to load: '+err.message); }
   };
   r.readAsText(f); ev.target.value='';
 });
 
+document.getElementById('bInitBack').addEventListener('click',exitInitiative);
+
 document.getElementById('bReset').addEventListener('click',()=>{
   if(confirm('Reset? All nodes and edges will be cleared.')){
     S.nodes={}; S.edges={}; S.formulas={}; S.computed={}; S.sel=null; S.nextId=1;
-    render(); initHistory();
+    S.initiatives={}; S.activeInitiativeId=null;
+    updateInitBanner(); render(); initHistory();
   }
 });
+
+// ── INITIATIVES ───────────────────────────────────────────────────────
+function addInitiative(){
+  const id=gid(), count=Object.keys(S.initiatives).length+1;
+  S.initiatives[id]={id,name:'Initiative '+count,overrides:{}};
+  render(); pushHistory();
+}
+
+function deleteInitiative(id){
+  if(S.activeInitiativeId===id) exitInitiative();
+  delete S.initiatives[id];
+  render(); pushHistory();
+}
+
+function renameInitiative(id,name){
+  if(!S.initiatives[id]) return;
+  S.initiatives[id].name=name;
+  updateInitBanner(); render(); pushHistory();
+}
+
+function enterInitiative(id){
+  S.activeInitiativeId=id;
+  S.sel=null;
+  updateInitBanner(); render();
+}
+
+function exitInitiative(){
+  S.activeInitiativeId=null;
+  S.sel=null;
+  updateInitBanner(); render();
+}
+
+function setInitiativeOverride(nodeId,mod){
+  if(!S.activeInitiativeId) return;
+  S.initiatives[S.activeInitiativeId].overrides[nodeId]=mod;
+  scheduleHistory();
+}
+
+function clearInitiativeOverride(nodeId){
+  if(!S.activeInitiativeId) return;
+  delete S.initiatives[S.activeInitiativeId].overrides[nodeId];
+  computeAll(); renderNodes(); renderEdges(); renderInspector(); scheduleHistory();
+}
+
+function updateInitBanner(){
+  const banner=document.getElementById('init-banner');
+  if(!banner) return;
+  if(!S.activeInitiativeId){ banner.style.display='none'; return; }
+  const init=S.initiatives[S.activeInitiativeId];
+  banner.style.display='';
+  const nameEl=document.getElementById('initBannerName');
+  if(nameEl) nameEl.textContent=init?.name||'';
+}
+
+function renderInitiativesPanel(){
+  const empty=document.getElementById('iEmpty');
+  const inits=Object.values(S.initiatives);
+  let h=`<div class="init-panel">`;
+  h+=`<div class="ititle">Initiatives</div>`;
+  h+=`<button class="btn primary" style="width:100%;margin-bottom:12px" id="bInitAdd">+ Add initiative</button>`;
+  if(inits.length===0){
+    h+=`<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px 0">No initiatives yet</div>`;
+  } else {
+    for(const init of inits){
+      const isActive=S.activeInitiativeId===init.id;
+      const overrideCount=Object.keys(init.overrides).length;
+      h+=`<div class="init-item${isActive?' active':''}">`;
+      h+=`<div class="init-item-name">${esc(init.name)}${overrideCount?`<span class="init-ov-badge">${overrideCount}</span>`:''}</div>`;
+      h+=`<div class="init-item-btns">`;
+      if(!isActive) h+=`<button class="btn" id="bEnter_${init.id}">Open →</button>`;
+      else h+=`<button class="btn active" id="bExit_${init.id}">Exit</button>`;
+      h+=`<button class="btn" id="bRename_${init.id}" title="Rename">✏</button>`;
+      h+=`<button class="btn danger" id="bDel_${init.id}">✕</button>`;
+      h+=`</div></div>`;
+    }
+  }
+  h+=`</div>`;
+  empty.innerHTML=h;
+
+  document.getElementById('bInitAdd').addEventListener('click',addInitiative);
+  for(const init of inits){
+    const enterBtn=document.getElementById('bEnter_'+init.id);
+    const exitBtn=document.getElementById('bExit_'+init.id);
+    const renameBtn=document.getElementById('bRename_'+init.id);
+    const delBtn=document.getElementById('bDel_'+init.id);
+    if(enterBtn) enterBtn.addEventListener('click',()=>enterInitiative(init.id));
+    if(exitBtn) exitBtn.addEventListener('click',exitInitiative);
+    renameBtn.addEventListener('click',()=>{
+      const name=prompt('Rename:',init.name);
+      if(name!=null&&name.trim()) renameInitiative(init.id,name.trim());
+    });
+    delBtn.addEventListener('click',()=>{
+      if(confirm('Delete "'+init.name+'"?')) deleteInitiative(init.id);
+    });
+  }
+}
 
 // ── UTILS ─────────────────────────────────────────────────────────────
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
