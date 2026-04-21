@@ -255,12 +255,14 @@ function renderNodes(){
     const isPct=!!n.baseValueIsPercent;
     const delta=(c.baseValue!=null&&c.modifiedValue!=null&&!c.error)?(c.modifiedValue-c.baseValue):null;
     const hasDelta=delta!==null&&Math.abs(delta)>1e-9;
+    const deltaPct=(hasDelta&&c.baseValue!=null&&Math.abs(c.baseValue)>1e-9)?(delta/c.baseValue*100):null;
     const fv=(v)=>isPct?fmtPct(v):fmt(v);
     let h=`<div class="nh">${esc(n.name)}</div><div class="nb">`;
     h+=`<div class="nr"><span class="nl">Base</span><span class="nv">${fv(c.baseValue)}</span></div>`;
     h+=`<div class="nr"><span class="nl">Modified</span><span class="nv ${hasDelta?'amber':''}">${fv(c.modifiedValue)}</span></div>`;
     h+=`<div class="nr"><span class="nl">Modifier</span><span class="nm ${hasM?'nz':''}">${mod>0?'+':''}${fmt(mod)}%</span></div>`;
     if(hasDelta){ const sign=delta>0?'+':''; h+=`<div class="nr"><span class="nl">Δ</span><span class="nv ${delta>0?'pos':'neg'}">${sign}${fv(delta)}</span></div>`; }
+    if(deltaPct!==null){ const sign=deltaPct>0?'+':''; h+=`<div class="nr"><span class="nl">Δ%</span><span class="nv ${deltaPct>0?'pos':'neg'}">${sign}${fmt(deltaPct)}%</span></div>`; }
     h+=`</div>`;
     if(c.error) h+=`<div class="nerr">${esc(c.error)}</div>`;
     card.innerHTML=h;
@@ -272,8 +274,10 @@ function nodeH(id){
   if(!n) return 88;
   const delta=(c.baseValue!=null&&c.modifiedValue!=null&&!c.error)?(c.modifiedValue-c.baseValue):null;
   const hasDelta=delta!==null&&Math.abs(delta)>1e-9;
+  const hasDeltaPct=hasDelta&&c.baseValue!=null&&Math.abs(c.baseValue)>1e-9;
   let h=36+6+18+18+18; // header+padding+base+modified+modifier
   if(hasDelta) h+=18;
+  if(hasDeltaPct) h+=18;
   if(c.error) h+=24;
   return h+14;
 }
