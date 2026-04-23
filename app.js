@@ -737,7 +737,31 @@ document.getElementById('bConn').addEventListener('click',()=>{
 document.getElementById('bSave').addEventListener('click',doSave);
 document.getElementById('bSaveAs').addEventListener('click',doSaveAs);
 
-document.getElementById('bLoad').addEventListener('click',()=>document.getElementById('fileIn').click());
+document.getElementById('bLoad').addEventListener('click',async()=>{
+  if(window.showOpenFilePicker){
+    let handle;
+    try{
+      [handle]=await window.showOpenFilePicker({
+        types:[{description:'JSON',accept:{'application/json':['.json']}}],
+      });
+    } catch(e){ if(e.name!=='AbortError') console.error(e); return; }
+    try{
+      const file=await handle.getFile();
+      const d=JSON.parse(await file.text());
+      S.nodes={}; S.edges={}; S.formulas={}; S.computed={}; S.sel=null;
+      S.initiatives={}; S.activeInitiativeId=null;
+      for(const n of d.nodes||[]) S.nodes[n.id]=n;
+      for(const e of d.edges||[]) S.edges[e.id]=e;
+      for(const f of d.formulas||[]) S.formulas[f.nodeId]=f.expression;
+      for(const i of d.initiatives||[]) S.initiatives[i.id]=i;
+      if(d._meta?.nextId) S.nextId=d._meta.nextId;
+      S.fileHandle=handle;
+      updateInitBanner(); render(); initHistory(); S.savedSnapshot=snapshotState(); updateSaveStatus(); updateFileName();
+    } catch(err){ alert('Failed to load: '+err.message); }
+  } else {
+    document.getElementById('fileIn').click();
+  }
+});
 document.getElementById('fileIn').addEventListener('change',ev=>{
   const f=ev.target.files[0]; if(!f) return;
   const r=new FileReader();
