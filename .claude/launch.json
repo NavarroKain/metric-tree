@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "live-server",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["live-server", "--port=3001", "--no-browser"],
+      "port": 3001
+    }
+  ]
+}

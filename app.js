@@ -7,7 +7,9 @@ const S = {
   formulas: {},   // nodeId → expression string
   computed: {},   // nodeId → {baseValue,modifiedValue,initiativeValue,hasOverride,error}
   initiatives: {},     // id → {id,name,overrides:{nodeId→modifier}}
+  initiativeOrder: [], // ordered array of initiative ids
   activeInitiativeId: null,
+  trackedNodeId: null, // id of the node whose % growth shows on each initiative card
   sel: null,      // {type:'node'|'edge', id}
   connMode: false,
   connSrc: null,
@@ -24,6 +26,8 @@ const S = {
   fileHandle: null,
   savedSnapshot: null,
 };
+
+let _dragInitId = null;
 function gid(){ return 'n'+(S.nextId++) }
 
 // ── DAG UTILS ─────────────────────────────────────────────────────────
@@ -86,7 +90,7 @@ function fmtPct(v){
 
 // ── HISTORY (UNDO/REDO) ───────────────────────────────────────────────
 function snapshotState(){
-  return JSON.stringify({nodes:S.nodes,edges:S.edges,formulas:S.formulas,initiatives:S.initiatives,nextId:S.nextId});
+  return JSON.stringify({nodes:S.nodes,edges:S.edges,formulas:S.formulas,initiatives:S.initiatives,initiativeOrder:S.initiativeOrder,trackedNodeId:S.trackedNodeId,nextId:S.nextId});
 }
 
 function pushHistory(){
@@ -107,7 +111,10 @@ function restoreState(snap){
   const d=JSON.parse(snap);
   S.nodes=d.nodes; S.edges=d.edges; S.formulas=d.formulas; S.nextId=d.nextId;
   S.initiatives=d.initiatives||{};
+  S.initiativeOrder=d.initiativeOrder||Object.keys(S.initiatives);
+  S.trackedNodeId=d.trackedNodeId||null;
   if(S.activeInitiativeId&&!S.initiatives[S.activeInitiativeId]) S.activeInitiativeId=null;
+  if(S.trackedNodeId&&!S.nodes[S.trackedNodeId]) S.trackedNodeId=null;
   S.sel=null; S.connSrc=null;
   updateInitBanner(); render();
 }
@@ -144,6 +151,8 @@ function buildSaveData(){
     edges:Object.values(S.edges).map(e=>({id:e.id,childId:e.childId,parentId:e.parentId,variable:e.variable})),
     formulas:Object.entries(S.formulas).map(([nodeId,expression])=>({nodeId,expression})),
     initiatives:Object.values(S.initiatives),
+    initiativeOrder:S.initiativeOrder,
+    trackedNodeId:S.trackedNodeId,
     _meta:{nextId:S.nextId},
   };
 }
@@ -264,11 +273,12 @@ function renderNodes(){
     const isMsel=S.multiSel.has(id);
     const initDelta=c.initiativeValue!=null&&c.modifiedValue!=null?c.initiativeValue-c.modifiedValue:null;
     const isInitAffected=initiative&&!c.hasOverride&&initDelta!==null&&Math.abs(initDelta)>1e-9;
-    card.className='nc'+(isSel?' sel':'')+(isSrc?' csrc':'')+(c.error?' err':'')+(isMsel?' msel':'')+(n.color?' colored':'')+(c.hasOverride?' init-changed':isInitAffected?' init-affected':'');
+    const isTracked=S.trackedNodeId===id;
+    card.className='nc'+(isSel?' sel':'')+(isSrc?' csrc':'')+(c.error?' err':'')+(isMsel?' msel':'')+(n.color?' colored':'')+(c.hasOverride?' init-changed':isInitAffected?' init-affected':'')+(isTracked?' tracked':'');
     card.style.borderLeftColor=n.color||'';
     const isPct=!!n.baseValueIsPercent;
     const fv=(v)=>isPct?fmtPct(v):fmt(v);
-    let h=`<div class="nh">${esc(n.name)}</div><div class="nb">`;
+    let h=`<div class="nh">${isTracked?'<span class="track-star">★</span>':''}${esc(n.name)}</div><div class="nb">`;
     if(initiative&&c.initiativeValue!=null&&!c.error){
       h+=`<div class="nr"><span class="nl">Base</span><span class="nv">${fv(c.baseValue)}</span></div>`;
       h+=`<div class="nr"><span class="nl">Main</span><span class="nv">${fv(c.modifiedValue)}</span></div>`;
@@ -433,9 +443,16 @@ function inspNode(id){
       h+=fg('Modified (computed)',`<input class="fi" id="iModifiedVal" type="text" value="${fv(c.modifiedValue)}" readonly>`);
     }
   }
-  h+=`<hr class="divider"><button class="btn danger" id="iDel" style="width:100%">Delete Node</button>`;
+  const isTracked=S.trackedNodeId===id;
+  h+=`<hr class="divider"><button class="btn${isTracked?' tracked-active':''}" id="iTrack" style="width:100%;margin-bottom:6px">${isTracked?'★ Key metric (click to unset)':'☆ Set as key metric'}</button>`;
+  h+=`<button class="btn danger" id="iDel" style="width:100%">Delete Node</button>`;
   cont.innerHTML=h;
 
+  document.getElementById('iTrack').addEventListener('click',()=>{
+    S.trackedNodeId=(S.trackedNodeId===id)?null:id;
+    renderInspector(); if(!S.sel) renderInitiativesPanel(); else renderInitiativesPanel();
+    renderNodes(); pushHistory();
+  });
   document.getElementById('iName').addEventListener('input',e=>{ n.name=e.target.value; renderNodes(); renderEdges(); scheduleHistory(); });
   document.getElementById('iColorRow').addEventListener('click',e=>{
     const dot=e.target.closest('.cdot'); if(!dot) return;
@@ -586,6 +603,7 @@ function delNode(id){
   delete S.nodes[id]; delete S.formulas[id];
   if(S.sel?.id===id) S.sel=null;
   if(S.connSrc===id) S.connSrc=null;
+  if(S.trackedNodeId===id) S.trackedNodeId=null;
   render(); pushHistory();
 }
 
@@ -749,11 +767,13 @@ document.getElementById('bLoad').addEventListener('click',async()=>{
       const file=await handle.getFile();
       const d=JSON.parse(await file.text());
       S.nodes={}; S.edges={}; S.formulas={}; S.computed={}; S.sel=null;
-      S.initiatives={}; S.activeInitiativeId=null;
+      S.initiatives={}; S.activeInitiativeId=null; S.trackedNodeId=null;
       for(const n of d.nodes||[]) S.nodes[n.id]=n;
       for(const e of d.edges||[]) S.edges[e.id]=e;
       for(const f of d.formulas||[]) S.formulas[f.nodeId]=f.expression;
       for(const i of d.initiatives||[]) S.initiatives[i.id]=i;
+      S.initiativeOrder=d.initiativeOrder||Object.keys(S.initiatives);
+      if(d.trackedNodeId&&S.nodes[d.trackedNodeId]) S.trackedNodeId=d.trackedNodeId;
       if(d._meta?.nextId) S.nextId=d._meta.nextId;
       S.fileHandle=handle;
       updateInitBanner(); render(); initHistory(); S.savedSnapshot=snapshotState(); updateSaveStatus(); updateFileName();
@@ -769,11 +789,13 @@ document.getElementById('fileIn').addEventListener('change',ev=>{
     try {
       const d=JSON.parse(e.target.result);
       S.nodes={}; S.edges={}; S.formulas={}; S.computed={}; S.sel=null;
-      S.initiatives={}; S.activeInitiativeId=null;
+      S.initiatives={}; S.activeInitiativeId=null; S.trackedNodeId=null;
       for(const n of d.nodes||[]) S.nodes[n.id]=n;
       for(const e of d.edges||[]) S.edges[e.id]=e;
       for(const f of d.formulas||[]) S.formulas[f.nodeId]=f.expression;
       for(const i of d.initiatives||[]) S.initiatives[i.id]=i;
+      S.initiativeOrder=d.initiativeOrder||Object.keys(S.initiatives);
+      if(d.trackedNodeId&&S.nodes[d.trackedNodeId]) S.trackedNodeId=d.trackedNodeId;
       if(d._meta?.nextId) S.nextId=d._meta.nextId;
       updateInitBanner(); render(); initHistory(); S.savedSnapshot=snapshotState(); updateSaveStatus();
     } catch(err){ alert('Failed to load: '+err.message); }
@@ -786,7 +808,7 @@ document.getElementById('bInitBack').addEventListener('click',exitInitiative);
 document.getElementById('bReset').addEventListener('click',()=>{
   if(confirm('Reset? All nodes and edges will be cleared.')){
     S.nodes={}; S.edges={}; S.formulas={}; S.computed={}; S.sel=null; S.nextId=1;
-    S.initiatives={}; S.activeInitiativeId=null;
+    S.initiatives={}; S.initiativeOrder=[]; S.activeInitiativeId=null; S.trackedNodeId=null;
     updateInitBanner(); render(); initHistory();
   }
 });
@@ -795,12 +817,14 @@ document.getElementById('bReset').addEventListener('click',()=>{
 function addInitiative(){
   const id=gid(), count=Object.keys(S.initiatives).length+1;
   S.initiatives[id]={id,name:'Initiative '+count,overrides:{}};
+  S.initiativeOrder.push(id);
   render(); pushHistory();
 }
 
 function deleteInitiative(id){
   if(S.activeInitiativeId===id) exitInitiative();
   delete S.initiatives[id];
+  S.initiativeOrder=S.initiativeOrder.filter(x=>x!==id);
   render(); pushHistory();
 }
 
@@ -844,20 +868,60 @@ function updateInitBanner(){
   if(nameEl) nameEl.textContent=init?.name||'';
 }
 
+function computeInitiativeValues(overrides){
+  const result={};
+  for(const id of topoSort()){
+    const n=S.nodes[id]; if(!n) continue;
+    const ownMod=parseFloat(n.modifier)||0;
+    const initMod=(id in overrides)?(parseFloat(overrides[id])||0):ownMod;
+    if(isLeaf(id)){
+      const b=parseFloat(n.baseValue)||0;
+      result[id]=b*(1+initMod/100);
+    } else {
+      const ch=childEdges(id), expr=S.formulas[id]||'';
+      if(!expr.trim()){ result[id]=null; continue; }
+      try {
+        const iv={};
+        for(const e of ch){
+          const v=result[e.childId];
+          if(v==null) throw new Error('Child error');
+          iv[e.variable]=v;
+        }
+        result[id]=evalFormula(expr,iv)*(1+initMod/100);
+      } catch(err){ result[id]=null; }
+    }
+  }
+  return result;
+}
+
 function renderInitiativesPanel(){
   const empty=document.getElementById('iEmpty');
-  const inits=Object.values(S.initiatives);
+  const inits=S.initiativeOrder.map(id=>S.initiatives[id]).filter(Boolean);
   let h=`<div class="init-panel">`;
   h+=`<div class="ititle">Initiatives</div>`;
   h+=`<button class="btn primary" style="width:100%;margin-bottom:12px" id="bInitAdd">+ Add initiative</button>`;
+  const mainVal=S.trackedNodeId?(S.computed[S.trackedNodeId]?.modifiedValue??null):null;
   if(inits.length===0){
     h+=`<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px 0">No initiatives yet</div>`;
   } else {
     for(const init of inits){
       const isActive=S.activeInitiativeId===init.id;
       const overrideCount=Object.keys(init.overrides).length;
-      h+=`<div class="init-item${isActive?' active':''}">`;
+      let metricBadge='';
+      if(S.trackedNodeId&&mainVal!=null){
+        const iVals=computeInitiativeValues(init.overrides);
+        const iVal=iVals[S.trackedNodeId];
+        if(iVal!=null&&Math.abs(mainVal)>1e-9){
+          const pct=(iVal-mainVal)/Math.abs(mainVal)*100;
+          const sign=pct>0?'+':'';
+          const cls=pct>0?'pos':pct<0?'neg':'';
+          metricBadge=`<span class="init-metric-badge ${cls}">${sign}${fmt(pct)}%</span>`;
+        }
+      }
+      h+=`<div class="init-item${isActive?' active':''}" draggable="true" data-init-id="${init.id}">`;
+      h+=`<div class="init-item-drag">⠿</div>`;
       h+=`<div class="init-item-name">${esc(init.name)}${overrideCount?`<span class="init-ov-badge">${overrideCount}</span>`:''}</div>`;
+      if(metricBadge) h+=metricBadge;
       h+=`<div class="init-item-btns">`;
       if(!isActive) h+=`<button class="btn" id="bEnter_${init.id}">Open →</button>`;
       else h+=`<button class="btn active" id="bExit_${init.id}">Exit</button>`;
@@ -871,6 +935,7 @@ function renderInitiativesPanel(){
 
   document.getElementById('bInitAdd').addEventListener('click',addInitiative);
   for(const init of inits){
+    const item=empty.querySelector(`[data-init-id="${init.id}"]`);
     const enterBtn=document.getElementById('bEnter_'+init.id);
     const exitBtn=document.getElementById('bExit_'+init.id);
     const renameBtn=document.getElementById('bRename_'+init.id);
@@ -884,6 +949,30 @@ function renderInitiativesPanel(){
     delBtn.addEventListener('click',()=>{
       if(confirm('Delete "'+init.name+'"?')) deleteInitiative(init.id);
     });
+    if(item){
+      item.addEventListener('dragstart',ev=>{
+        _dragInitId=init.id;
+        ev.dataTransfer.effectAllowed='move';
+        item.classList.add('dragging');
+      });
+      item.addEventListener('dragend',()=>{ _dragInitId=null; item.classList.remove('dragging'); });
+      item.addEventListener('dragover',ev=>{
+        ev.preventDefault(); ev.dataTransfer.dropEffect='move';
+        item.classList.add('drag-over');
+      });
+      item.addEventListener('dragleave',()=>item.classList.remove('drag-over'));
+      item.addEventListener('drop',ev=>{
+        ev.preventDefault(); item.classList.remove('drag-over');
+        if(!_dragInitId||_dragInitId===init.id) return;
+        const fromIdx=S.initiativeOrder.indexOf(_dragInitId);
+        const toIdx=S.initiativeOrder.indexOf(init.id);
+        if(fromIdx<0||toIdx<0) return;
+        S.initiativeOrder.splice(fromIdx,1);
+        S.initiativeOrder.splice(toIdx,0,_dragInitId);
+        _dragInitId=null;
+        renderInitiativesPanel(); pushHistory();
+      });
+    }
   }
 }
 
