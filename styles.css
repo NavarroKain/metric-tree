@@ -120,16 +120,17 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 
 /* INITIATIVE PANEL (in inspector empty state) */
 .init-panel{padding:0}
-.init-item{display:flex;align-items:center;gap:6px;padding:8px 6px 8px 6px;border-radius:6px;border:1px solid var(--border);margin-bottom:6px;background:var(--surface);cursor:default}
-.init-item[draggable]{cursor:grab}
+.init-item{display:flex;flex-direction:column;gap:6px;padding:8px 8px 8px 6px;border-radius:6px;border:1px solid var(--border);margin-bottom:6px;background:var(--surface)}
+.init-item[draggable]{cursor:default}
 .init-item.dragging{opacity:.4}
 .init-item.drag-over{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--surface))}
 .init-item.active{border-color:var(--amber)}
-.init-item-drag{color:var(--muted);font-size:14px;cursor:grab;flex-shrink:0;user-select:none;padding:0 2px}
-.init-item-name{font-size:13px;font-weight:500;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.init-item-btns{display:flex;gap:4px;flex-shrink:0}
+.init-item-top{display:flex;align-items:flex-start;gap:6px}
+.init-item-drag{color:var(--muted);font-size:14px;cursor:grab;flex-shrink:0;user-select:none;padding-top:1px}
+.init-item-name{font-size:13px;font-weight:500;flex:1;min-width:0;word-break:break-word;line-height:1.4}
+.init-item-btns{display:flex;gap:4px;justify-content:flex-end}
 .init-item-btns .btn{padding:3px 7px;font-size:11px}
 .init-ov-badge{display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:15px;background:var(--amber);color:#fff;border-radius:8px;font-size:10px;font-weight:700;padding:0 4px;margin-left:5px;vertical-align:middle}
-.init-metric-badge{display:inline-flex;align-items:center;justify-content:center;height:15px;border-radius:8px;font-size:10px;font-weight:700;padding:0 5px;flex-shrink:0;background:var(--surface);border:1px solid var(--border)}
+.init-metric-badge{display:inline-flex;align-items:center;justify-content:center;height:15px;border-radius:8px;font-size:10px;font-weight:700;padding:0 5px;margin-left:5px;vertical-align:middle;background:var(--surface);border:1px solid var(--border)}
 .init-metric-badge.pos{color:var(--green);border-color:var(--green)}
 .init-metric-badge.neg{color:var(--error);border-color:var(--error)}
