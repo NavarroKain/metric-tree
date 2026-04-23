@@ -919,9 +919,10 @@ function renderInitiativesPanel(){
         }
       }
       h+=`<div class="init-item${isActive?' active':''}" draggable="true" data-init-id="${init.id}">`;
+      h+=`<div class="init-item-top">`;
       h+=`<div class="init-item-drag">⠿</div>`;
-      h+=`<div class="init-item-name">${esc(init.name)}${overrideCount?`<span class="init-ov-badge">${overrideCount}</span>`:''}</div>`;
-      if(metricBadge) h+=metricBadge;
+      h+=`<div class="init-item-name">${esc(init.name)}${overrideCount?`<span class="init-ov-badge">${overrideCount}</span>`:''}${metricBadge}</div>`;
+      h+=`</div>`;
       h+=`<div class="init-item-btns">`;
       if(!isActive) h+=`<button class="btn" id="bEnter_${init.id}">Open →</button>`;
       else h+=`<button class="btn active" id="bExit_${init.id}">Exit</button>`;
