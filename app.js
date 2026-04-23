@@ -387,7 +387,9 @@ function ns(tag){ return document.createElementNS('http://www.w3.org/2000/svg',t
 // ── INSPECTOR ─────────────────────────────────────────────────────────
 function renderInspector(){
   const empty=document.getElementById('iEmpty'), cont=document.getElementById('iContent');
+  const insp=document.getElementById('inspector');
   if(!S.sel){ empty.style.display=''; cont.style.display='none'; renderInitiativesPanel(); return; }
+  insp?.classList.remove('init-mode');
   empty.style.display='none'; cont.style.display='';
   S.sel.type==='node'?inspNode(S.sel.id):inspEdge(S.sel.id);
 }
@@ -894,35 +896,46 @@ function computeInitiativeValues(overrides){
   return result;
 }
 
+function getRootId(){
+  const asChild=new Set(Object.values(S.edges).map(e=>e.childId));
+  const roots=Object.keys(S.nodes).filter(id=>!asChild.has(id));
+  return roots[0]||null;
+}
+
 function renderInitiativesPanel(){
+  document.getElementById('inspector')?.classList.add('init-mode');
   const empty=document.getElementById('iEmpty');
   const inits=S.initiativeOrder.map(id=>S.initiatives[id]).filter(Boolean);
   let h=`<div class="init-panel">`;
-  h+=`<div class="ititle">Initiatives</div>`;
-  h+=`<button class="btn primary" style="width:100%;margin-bottom:12px" id="bInitAdd">+ Add initiative</button>`;
-  const mainVal=S.trackedNodeId?(S.computed[S.trackedNodeId]?.modifiedValue??null):null;
+  h+=`<div class="init-panel-header"><div class="ititle">Initiatives</div><button class="btn primary" id="bInitAdd">+ Add initiative</button></div>`;
+  const displayNodeId=S.trackedNodeId||getRootId();
+  const displayNode=displayNodeId?S.nodes[displayNodeId]:null;
+  const mainVal=displayNodeId?(S.computed[displayNodeId]?.modifiedValue??null):null;
+  const fvD=(v)=>displayNode?.baseValueIsPercent?fmtPct(v):fmt(v);
   if(inits.length===0){
     h+=`<div style="color:var(--muted);font-size:12px;text-align:center;padding:20px 0">No initiatives yet</div>`;
   } else {
     for(const init of inits){
       const isActive=S.activeInitiativeId===init.id;
       const overrideCount=Object.keys(init.overrides).length;
-      let metricBadge='';
-      if(S.trackedNodeId&&mainVal!=null){
+      let metricHtml='';
+      if(displayNodeId&&mainVal!=null){
         const iVals=computeInitiativeValues(init.overrides);
-        const iVal=iVals[S.trackedNodeId];
-        if(iVal!=null&&Math.abs(mainVal)>1e-9){
-          const pct=(iVal-mainVal)/Math.abs(mainVal)*100;
-          const sign=pct>0?'+':'';
-          const cls=pct>0?'pos':pct<0?'neg':'';
-          metricBadge=`<span class="init-metric-badge ${cls}">${sign}${fmt(pct)}%</span>`;
+        const iVal=iVals[displayNodeId];
+        if(iVal!=null){
+          metricHtml=`<span>${fvD(iVal)}</span>`;
+          if(Math.abs(mainVal)>1e-9){
+            const pct=(iVal-mainVal)/Math.abs(mainVal)*100;
+            const sign=pct>0?'+':'';
+            const cls=pct>0?'pos':pct<0?'neg':'';
+            metricHtml+=`<span class="init-metric-badge ${cls}">${sign}${fmt(pct)}%</span>`;
+          }
         }
       }
       h+=`<div class="init-item${isActive?' active':''}" draggable="true" data-init-id="${init.id}">`;
-      h+=`<div class="init-item-top">`;
       h+=`<div class="init-item-drag">⠿</div>`;
-      h+=`<div class="init-item-name">${esc(init.name)}${overrideCount?`<span class="init-ov-badge">${overrideCount}</span>`:''}${metricBadge}</div>`;
-      h+=`</div>`;
+      h+=`<div class="init-item-name">${esc(init.name)}${overrideCount?`<span class="init-ov-badge">${overrideCount}</span>`:''}</div>`;
+      h+=`<div class="init-item-metric">${metricHtml}</div>`;
       h+=`<div class="init-item-btns">`;
       if(!isActive) h+=`<button class="btn" id="bEnter_${init.id}">Open →</button>`;
       else h+=`<button class="btn active" id="bExit_${init.id}">Exit</button>`;
